@@ -11,15 +11,18 @@ enum CloneFilter { all, cloned, notCloned }
 
 /// Diálogo "Clonar un repositorio": todos los repos de la cuenta, con filtros y
 /// clonado en un clic. Devuelve la ruta del repo recién clonado, si hubo uno.
-Future<String?> showCloneDialog(BuildContext context, Settings settings, Set<String> clonedRemotes) =>
-    showDialog<String>(
-      context: context,
-      builder: (_) => Dialog(
-        backgroundColor: Gh.bg,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(Gh.radius), side: Gh.divider),
-        child: SizedBox(width: 640, height: 560, child: _CloneBody(settings: settings, clonedRemotes: clonedRemotes)),
-      ),
-    );
+Future<String?> showCloneDialog(BuildContext context, Settings settings, Set<String> clonedRemotes) => showDialog<String>(
+  context: context,
+  builder: (_) => Dialog(
+    backgroundColor: Gh.bg,
+    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(Gh.radius), side: Gh.divider),
+    child: SizedBox(
+      width: 640,
+      height: 560,
+      child: _CloneBody(settings: settings, clonedRemotes: clonedRemotes),
+    ),
+  ),
+);
 
 class _CloneBody extends StatefulWidget {
   const _CloneBody({required this.settings, required this.clonedRemotes});
@@ -58,8 +61,11 @@ class _CloneBodyState extends State<_CloneBody> {
     });
     final token = await credentialToken('github.com');
     if (token == null) {
-      setState(() => _error = 'Git no tiene credenciales de GitHub. Inicia sesión con '
-          '"gh auth login" o con el Git Credential Manager y vuelve a cargar.');
+      setState(
+        () => _error =
+            'Git no tiene credenciales de GitHub. Inicia sesión con '
+            '"gh auth login" o con el Git Credential Manager y vuelve a cargar.',
+      );
       return;
     }
     try {
@@ -96,31 +102,53 @@ class _CloneBodyState extends State<_CloneBody> {
 
   @override
   Widget build(BuildContext context) {
-    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-      Container(
-        padding: const EdgeInsets.all(Gh.sp * 1.5),
-        decoration: const BoxDecoration(border: Border(bottom: Gh.divider)),
-        child: Row(children: [
-          const Text('Clonar un repositorio', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
-          const Spacer(),
-          IconButton(tooltip: 'Recargar', iconSize: 16, onPressed: _load, icon: const Icon(Icons.refresh)),
-          IconButton(tooltip: 'Cerrar', iconSize: 16, onPressed: () => Navigator.pop(context), icon: const Icon(Icons.close)),
-        ]),
-      ),
-      Expanded(child: _list()),
-      Container(
-        padding: const EdgeInsets.all(Gh.sp),
-        decoration: const BoxDecoration(color: Gh.boxAlt, border: Border(top: Gh.divider)),
-        child: Row(children: [
-          const Text('Carpeta de destino  '),
-          Expanded(child: TextField(controller: _dir, style: const TextStyle(fontSize: Gh.fontSize))),
-        ]),
-      ),
-    ]);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Container(
+          padding: const EdgeInsets.all(Gh.sp * 1.5),
+          decoration: const BoxDecoration(border: Border(bottom: Gh.divider)),
+          child: Row(
+            children: [
+              const Text('Clonar un repositorio', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+              const Spacer(),
+              IconButton(tooltip: 'Recargar', iconSize: 16, onPressed: _load, icon: const Icon(Icons.refresh)),
+              IconButton(tooltip: 'Cerrar', iconSize: 16, onPressed: () => Navigator.pop(context), icon: const Icon(Icons.close)),
+            ],
+          ),
+        ),
+        Expanded(child: _list()),
+        Container(
+          padding: const EdgeInsets.all(Gh.sp),
+          decoration: const BoxDecoration(
+            color: Gh.boxAlt,
+            border: Border(top: Gh.divider),
+          ),
+          child: Row(
+            children: [
+              const Text('Carpeta de destino  '),
+              Expanded(
+                child: TextField(
+                  controller: _dir,
+                  style: const TextStyle(fontSize: Gh.fontSize),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
   }
 
   Widget _list() {
-    if (_error != null) return Center(child: Padding(padding: const EdgeInsets.all(24), child: Text(_error!, textAlign: TextAlign.center)));
+    if (_error != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Text(_error!, textAlign: TextAlign.center),
+        ),
+      );
+    }
     final repos = _repos;
     if (repos == null) return const Center(child: CircularProgressIndicator());
 
@@ -136,53 +164,62 @@ class _CloneBodyState extends State<_CloneBody> {
       };
     }).toList();
 
-    return Column(children: [
-      Padding(
-        padding: const EdgeInsets.all(Gh.sp),
-        child: Row(children: [
-          Expanded(
-            child: TextField(
-              autofocus: true,
-              style: const TextStyle(fontSize: Gh.fontSize),
-              decoration: const InputDecoration(prefixIcon: Icon(Icons.search, size: 16), hintText: 'Filtrar repositorios'),
-              onChanged: (v) => setState(() => _query = v),
-            ),
-          ),
-          const SizedBox(width: Gh.sp),
-          DropdownButton<String?>(
-            value: _owner,
-            isDense: true,
-            style: const TextStyle(fontSize: Gh.fontSize, color: Gh.text),
-            items: [
-              const DropdownMenuItem(value: null, child: Text('Todos los dueños')),
-              for (final o in owners) DropdownMenuItem(value: o, child: Text(o)),
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.all(Gh.sp),
+          child: Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  autofocus: true,
+                  style: const TextStyle(fontSize: Gh.fontSize),
+                  decoration: const InputDecoration(prefixIcon: Icon(Icons.search, size: 16), hintText: 'Filtrar repositorios'),
+                  onChanged: (v) => setState(() => _query = v),
+                ),
+              ),
+              const SizedBox(width: Gh.sp),
+              DropdownButton<String?>(
+                value: _owner,
+                isDense: true,
+                style: const TextStyle(fontSize: Gh.fontSize, color: Gh.text),
+                items: [
+                  const DropdownMenuItem(value: null, child: Text('Todos los dueños')),
+                  for (final o in owners) DropdownMenuItem(value: o, child: Text(o)),
+                ],
+                onChanged: (v) => setState(() => _owner = v),
+              ),
+              const SizedBox(width: Gh.sp),
+              DropdownButton<CloneFilter>(
+                value: _filter,
+                isDense: true,
+                style: const TextStyle(fontSize: Gh.fontSize, color: Gh.text),
+                items: const [
+                  DropdownMenuItem(value: CloneFilter.all, child: Text('Todos')),
+                  DropdownMenuItem(value: CloneFilter.cloned, child: Text('Clonados')),
+                  DropdownMenuItem(value: CloneFilter.notCloned, child: Text('Sin clonar')),
+                ],
+                onChanged: (v) => setState(() => _filter = v!),
+              ),
             ],
-            onChanged: (v) => setState(() => _owner = v),
           ),
-          const SizedBox(width: Gh.sp),
-          DropdownButton<CloneFilter>(
-            value: _filter,
-            isDense: true,
-            style: const TextStyle(fontSize: Gh.fontSize, color: Gh.text),
-            items: const [
-              DropdownMenuItem(value: CloneFilter.all, child: Text('Todos')),
-              DropdownMenuItem(value: CloneFilter.cloned, child: Text('Clonados')),
-              DropdownMenuItem(value: CloneFilter.notCloned, child: Text('Sin clonar')),
-            ],
-            onChanged: (v) => setState(() => _filter = v!),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: Gh.sp),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: Text('${shown.length} de ${repos.length}', style: Theme.of(context).textTheme.bodySmall),
           ),
-        ]),
-      ),
-      Padding(
-        padding: const EdgeInsets.symmetric(horizontal: Gh.sp),
-        child: Align(alignment: Alignment.centerLeft, child: Text('${shown.length} de ${repos.length}', style: Theme.of(context).textTheme.bodySmall)),
-      ),
-      Expanded(
-        child: shown.isEmpty
-            ? const Center(child: Text('Ningún repo coincide con los filtros.', style: TextStyle(color: Gh.textSecondary)))
-            : ListView.builder(itemCount: shown.length, itemExtent: 44, itemBuilder: (_, i) => _tile(shown[i])),
-      ),
-    ]);
+        ),
+        Expanded(
+          child: shown.isEmpty
+              ? const Center(
+                  child: Text('Ningún repo coincide con los filtros.', style: TextStyle(color: Gh.textSecondary)),
+                )
+              : ListView.builder(itemCount: shown.length, itemExtent: 44, itemBuilder: (_, i) => _tile(shown[i])),
+        ),
+      ],
+    );
   }
 
   Widget _tile(Repo r) {
@@ -197,18 +234,24 @@ class _CloneBodyState extends State<_CloneBody> {
     return Container(
       decoration: const BoxDecoration(border: Border(bottom: Gh.divider)),
       padding: const EdgeInsets.symmetric(horizontal: Gh.sp),
-      child: Row(children: [
-        Icon(r.private ? Icons.lock_outline : Icons.book_outlined, size: 16, color: Gh.textSecondary),
-        const SizedBox(width: Gh.sp),
-        Expanded(
-          child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(r.fullName, overflow: TextOverflow.ellipsis),
-            if (r.description != null)
-              Text(r.description!, maxLines: 1, overflow: TextOverflow.ellipsis, style: Theme.of(context).textTheme.bodySmall),
-          ]),
-        ),
-        trailing,
-      ]),
+      child: Row(
+        children: [
+          Icon(r.private ? Icons.lock_outline : Icons.book_outlined, size: 16, color: Gh.textSecondary),
+          const SizedBox(width: Gh.sp),
+          Expanded(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(r.fullName, overflow: TextOverflow.ellipsis),
+                if (r.description != null)
+                  Text(r.description!, maxLines: 1, overflow: TextOverflow.ellipsis, style: Theme.of(context).textTheme.bodySmall),
+              ],
+            ),
+          ),
+          trailing,
+        ],
+      ),
     );
   }
 }

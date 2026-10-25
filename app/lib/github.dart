@@ -4,13 +4,8 @@ import 'dart:io';
 class Repo {
   Repo({required this.name, required this.owner, required this.cloneUrl, required this.private, this.description});
 
-  factory Repo.fromGithub(Map<String, dynamic> j) => Repo(
-        name: j['name'],
-        owner: j['owner']['login'],
-        cloneUrl: j['clone_url'],
-        private: j['private'],
-        description: j['description'],
-      );
+  factory Repo.fromGithub(Map<String, dynamic> j) =>
+      Repo(name: j['name'], owner: j['owner']['login'], cloneUrl: j['clone_url'], private: j['private'], description: j['description']);
 
   final String name, owner, cloneUrl;
   final bool private;

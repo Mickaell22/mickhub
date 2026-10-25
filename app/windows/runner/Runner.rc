@@ -90,12 +90,12 @@ BEGIN
         BLOCK "040904e4"
         BEGIN
             VALUE "CompanyName", "com.mickaell" "\0"
-            VALUE "FileDescription", "mickhub" "\0"
+            VALUE "FileDescription", "MickHub" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
             VALUE "InternalName", "mickhub" "\0"
             VALUE "LegalCopyright", "Copyright (C) 2026 com.mickaell. All rights reserved." "\0"
             VALUE "OriginalFilename", "mickhub.exe" "\0"
-            VALUE "ProductName", "mickhub" "\0"
+            VALUE "ProductName", "MickHub" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

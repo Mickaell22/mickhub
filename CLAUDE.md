@@ -4,13 +4,27 @@ Cliente de git de escritorio a la medida del dueño, para reemplazar a GitHub De
 
 Proyecto hermano: **Surco** (`../Surco`), su reproductor de música en Flutter. MickHub hereda de ahí el flujo de trabajo, el estilo de README y la idea de temas y decoraciones, pero mucho más cargada. Antes de reinventar algo de temas, paletas aleatorias, temporadas o `CustomPainter`, mirar cómo lo resolvió Surco (`lib/settings.dart`, `lib/theme.dart`, `lib/ui/decor.dart`) y sus trampas en `../Surco/CLAUDE.md`.
 
-Estado: **v1 en curso**. `app/` (org `com.mickaell`, plataformas windows, linux y android) ya tiene la vista principal al estilo de GitHub Desktop: barra con repositorio, rama y fetch/pull/push; tabs Cambios (casillas, commit, diff) e Historial; clonado desde la lista de repos de GitHub. Falta: candado de cambios locales, Azure DevOps, búsqueda en historial. `api/` es un FastAPI con solo `GET /health`.
+Estado: **v1 en curso**. `app/` (org `com.mickaell`, plataformas windows, linux y android) ya tiene la vista principal al estilo de GitHub Desktop: barra con repositorio, rama y fetch/pull/push; tabs Cambios (casillas, commit, diff) e Historial; clonado desde la lista de repos de GitHub. También: candado de cambios locales (con sección "Protegidos" y aviso si un pull choca), descartar cambios con papelera propia, apartados (stash por archivos con nombre), nueva rama local, búsqueda en historial, grupos de repos con ícono, abrir carpeta/editor, menús contextuales con íconos, ícono propio. Falta: Azure DevOps. `api/` es un FastAPI con solo `GET /health`.
 
 ## Diseño base: copia de GitHub Desktop
 
 El layout y los colores salen de GitHub Desktop 3.4 (MIT), sacados con ingeniería inversa de sus SCSS originales: vienen enteros en `sourcesContent` de `resources/app/renderer.css.map` (en Kali: `/usr/lib/github-desktop/resources/app/`). Para medir algo nuevo, extraer de ahí en vez de adivinar; `themes/_dark.scss` y `_variables.scss` tienen casi todo. Los valores ya resueltos (darken/lighten de Sass pasados a hex) viven en `app/lib/theme.dart` (`Gh`) y los de sintaxis en `app/lib/syntax.dart`. Esta es la **base**; la personalización (temas, decoraciones) va encima y no debe romper estas medidas.
 
-Mapa de `app/lib/`: `main.dart` (ventana, barra, desplegables), `panes.dart` (Cambios e Historial), `diff_view.dart` (parser y visor de diff), `syntax.dart` (resaltado con el paquete `highlight`), `git.dart` (todo lo que llama a git), `github.dart` (API de GitHub), `clone_dialog.dart`, `settings.dart`, `theme.dart`.
+Mapa de `app/lib/`: `main.dart` (ventana, barra, desplegables, menú de repos, grupos), `panes.dart` (Cambios e Historial), `diff_view.dart` (parser y visor de diff), `syntax.dart` (resaltado con el paquete `highlight`), `git.dart` (todo lo que llama a git), `github.dart` (API de GitHub), `clone_dialog.dart`, `settings.dart`, `theme.dart`, `system.dart` (abrir carpeta/editor), `trash.dart` (papelera).
+
+Ícono: original (una "M" hecha de grafo de commits), generado por `app/tool/icon.py` (Pillow) en `app/assets/icon.png`; de ahí salen con ImageMagick el `.ico` de Windows y los mipmaps de Android. En Linux lo pone `linux/runner/my_application.cc` escalado a 128 px: a 1024 px no entra en `_NET_WM_ICON` de X11 y la barra de tareas muestra el genérico sin dar error.
+
+Flujo "fix rápido" (pedido explícito del dueño): con una implementación a medias en su rama, **Apartar** los archivos que no deben viajar (`git stash push --include-untracked -m <nombre> -- <rutas>`), crear **Nueva rama local** (los cambios sin commitear que quedan viajan con ella), hacer el fix, volver y **Recuperar** (`stash pop`). Se aparta por archivo, no por bloque. Los stashes de GitHub Desktop (`!!GitHub_Desktop<rama>`) aparecen como "Guardado por GitHub Desktop". **Papelera**: antes de descartar se copia el archivo a `<dir de ajustes>/papelera/<timestamp>/` (`contenido` + `meta.json`); no se vacía sola.
+
+Optimización ya hecha: el resaltado del diff corre en un isolate (`Isolate.run`); diffs de más de 1 MB se ocultan hasta pedirlos; los remotos de los repos se leen en paralelo al arrancar.
+
+## Operar MickHub desde Claude Code
+
+El dueño quiere poder pedirle a Claude "clóname X", "agrupa estos repos", etc. No hay API para esto a propósito: todo el estado de la app es git más un JSON, y la app **vigila ese JSON y se recarga sola** (`Settings.watch`), así que basta con:
+
+- **Ajustes**: `~mickaell/.local/share/com.mickaell.mickhub/settings.json` (en Windows, `%APPDATA%\com.mickaell\mickhub\settings.json`). Claves: `reposDir` (carpeta de clonado; sus subcarpetas con `.git` aparecen solas), `extraRepos` (rutas fuera de `reposDir`), `groups` (ruta absoluta del repo -> nombre de grupo), `groupIcons` (nombre de grupo -> clave de ícono de `groupIcons` en `theme.dart`; un grupo existe aunque no tenga repos), `currentRepo`, `sidebarWidth`, `editorCommand`. Editar como `mickaell` y escribir atómico (archivo temporal + rename); conservar las claves que no se tocan.
+- **Clonar**: `git clone <url> "<reposDir>/<nombre>"` como `mickaell`. Si va a un grupo, agregar su ruta en `groups`.
+- Las rutas de `groups` deben ser exactas: `<reposDir sin barra final>/<carpeta>`.
 
 ## Por qué existe (el problema real)
 
@@ -79,7 +93,7 @@ Reglas para esto:
 - Commits chicos, uno por cambio lógico; cada commit compila y pasa tests.
 - Antes de cada commit: `flutter analyze` sin issues y `flutter test` en verde. Verificar que el mensaje no tenga `Co-Authored-By` ni similares.
 - Textos de la UI **en español con tildes y eñes**.
-- Flutter está en `/opt/flutter/bin` y se corre como `mickaell` (Claude Code corre como root): `sudo -u mickaell -H bash -c 'export PATH=/opt/flutter/bin:$PATH; cd ...; flutter ...'`. Después de editar como root, `chown -R mickaell:mickaell .`. Compilar para Linux pide `cmake ninja-build clang pkg-config libgtk-3-dev`, y con clang 21 también `lld-21` y `llvm-21` (Flutter busca `ld.lld` y `llvm-ar` en `/usr/lib/llvm-21/bin`). Para ver la app desde Claude: lanzarla como `mickaell` con `DISPLAY=:0 XAUTHORITY=/home/mickaell/.Xauthority` y sacar captura con `import -window <id>` (id con `xdotool search --name '^mickhub$'`); `xdotool` también sirve para hacer clics.
+- Flutter está en `/opt/flutter/bin` y se corre como `mickaell` (Claude Code corre como root): `sudo -u mickaell -H bash -c 'export PATH=/opt/flutter/bin:$PATH; cd ...; flutter ...'`. Después de editar como root, `chown -R mickaell:mickaell .`. Compilar para Linux pide `cmake ninja-build clang pkg-config libgtk-3-dev`, y con clang 21 también `lld-21` y `llvm-21` (Flutter busca `ld.lld` y `llvm-ar` en `/usr/lib/llvm-21/bin`). Para ver la app desde Claude: lanzarla como `mickaell` con `DISPLAY=:0 XAUTHORITY=/home/mickaell/.Xauthority` y sacar captura con `import -window <id>` (id con `xdotool search --name '^MickHub$'`); `xdotool` también sirve para hacer clics.
 - `gh` está logueado como `mickaell`; correrlo con `unset GH_TOKEN` (el GH_TOKEN de root es inválido).
 - Todo valor configurable (URL de la API, tokens, DATABASE_URL, DEEPSEEK_API_KEY) va en variables de entorno con su `.env.example`; nunca en el código, ni como default. Repo público: nada de datos personales ni de la empresa en el código.
 

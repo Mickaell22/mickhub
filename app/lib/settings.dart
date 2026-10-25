@@ -1,8 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
+
+import 'trash.dart';
 
 /// Preferencias en un JSON chico, como en Surco (sin shared_preferences).
 class Settings extends ChangeNotifier {
@@ -18,7 +21,32 @@ class Settings extends ChangeNotifier {
 
   double sidebarWidth = 250;
 
+  /// Grupo de cada repo (ruta -> nombre del grupo), para ordenar y filtrar.
+  Map<String, String> groups = {};
+
+  /// Grupos creados (nombre -> clave de ícono de [groupIcons]). Un grupo existe
+  /// aunque todavía no tenga repos.
+  Map<String, String> groupIcons = {};
+
+  /// Comando para "Abrir en el editor".
+  String editorCommand = 'code';
+
   File? _file;
+
+  /// Ruta del JSON de ajustes. Se puede editar desde fuera (por ejemplo Claude
+  /// Code agrupando repos) y la app lo recarga sola, ver [watch].
+  String? get path => _file?.path;
+
+  /// Avisa cuando el archivo de ajustes cambia en disco. Se vigila la carpeta y
+  /// no el archivo porque los editores suelen reemplazarlo (otro inodo).
+  StreamSubscription<FileSystemEvent>? watch(void Function() onChange) {
+    final f = _file;
+    if (f == null || !f.parent.existsSync()) return null;
+    return f.parent
+        .watch()
+        .where((e) => e.path == f.path || (e is FileSystemMoveEvent && e.destination == f.path))
+        .listen((_) => onChange());
+  }
 
   Future<void> load() async {
     _file = File('${(await getApplicationSupportDirectory()).path}/settings.json');
@@ -28,19 +56,32 @@ class Settings extends ChangeNotifier {
     extraRepos = List<String>.from(j['extraRepos'] ?? []);
     currentRepo = j['currentRepo'];
     sidebarWidth = (j['sidebarWidth'] as num?)?.toDouble() ?? 250;
+    groups = Map<String, String>.from(j['groups'] ?? {});
+    editorCommand = j['editorCommand'] ?? 'code';
+    groupIcons = Map<String, String>.from(j['groupIcons'] ?? {});
   }
 
   Future<void> update(void Function(Settings) change) async {
     change(this);
     notifyListeners();
     await _file?.parent.create(recursive: true);
-    await _file?.writeAsString(jsonEncode({
-      'reposDir': reposDir,
-      'extraRepos': extraRepos,
-      'currentRepo': currentRepo,
-      'sidebarWidth': sidebarWidth,
-    }));
+    await _file?.writeAsString(
+      jsonEncode({
+        'reposDir': reposDir,
+        'extraRepos': extraRepos,
+        'currentRepo': currentRepo,
+        'sidebarWidth': sidebarWidth,
+        'groups': groups,
+        'editorCommand': editorCommand,
+        'groupIcons': groupIcons,
+      }),
+    );
   }
+
+  /// Todos los grupos: los creados y los que aparecen asignados a algún repo.
+  List<String> allGroups() => ({...groupIcons.keys, ...groups.values}.toList()..sort());
+
+  Trash get trash => Trash(Directory('${_file!.parent.path}${Platform.pathSeparator}papelera'));
 
   /// Repos locales: los de [reposDir] (un nivel) más los agregados a mano.
   List<String> localRepos() {

@@ -45,14 +45,54 @@ const _colors = <String, Color>{
 };
 
 const _byExtension = {
-  'dart': 'dart', 'js': 'javascript', 'jsx': 'javascript', 'mjs': 'javascript', 'cjs': 'javascript',
-  'ts': 'typescript', 'tsx': 'typescript', 'py': 'python', 'json': 'json', 'yaml': 'yaml', 'yml': 'yaml',
-  'md': 'markdown', 'html': 'xml', 'htm': 'xml', 'xml': 'xml', 'svg': 'xml', 'xaml': 'xml', 'csproj': 'xml',
-  'css': 'css', 'scss': 'scss', 'less': 'less', 'sh': 'bash', 'bash': 'bash', 'zsh': 'bash',
-  'cs': 'cs', 'java': 'java', 'kt': 'kotlin', 'kts': 'kotlin', 'go': 'go', 'rs': 'rust',
-  'c': 'cpp', 'h': 'cpp', 'cc': 'cpp', 'cpp': 'cpp', 'hpp': 'cpp', 'sql': 'sql', 'php': 'php',
-  'rb': 'ruby', 'swift': 'swift', 'gradle': 'gradle', 'toml': 'ini', 'ini': 'ini', 'vue': 'vue',
-  'ps1': 'powershell', 'bat': 'dos', 'cmd': 'dos', 'lua': 'lua', 'cmake': 'cmake',
+  'dart': 'dart',
+  'js': 'javascript',
+  'jsx': 'javascript',
+  'mjs': 'javascript',
+  'cjs': 'javascript',
+  'ts': 'typescript',
+  'tsx': 'typescript',
+  'py': 'python',
+  'json': 'json',
+  'yaml': 'yaml',
+  'yml': 'yaml',
+  'md': 'markdown',
+  'html': 'xml',
+  'htm': 'xml',
+  'xml': 'xml',
+  'svg': 'xml',
+  'xaml': 'xml',
+  'csproj': 'xml',
+  'css': 'css',
+  'scss': 'scss',
+  'less': 'less',
+  'sh': 'bash',
+  'bash': 'bash',
+  'zsh': 'bash',
+  'cs': 'cs',
+  'java': 'java',
+  'kt': 'kotlin',
+  'kts': 'kotlin',
+  'go': 'go',
+  'rs': 'rust',
+  'c': 'cpp',
+  'h': 'cpp',
+  'cc': 'cpp',
+  'cpp': 'cpp',
+  'hpp': 'cpp',
+  'sql': 'sql',
+  'php': 'php',
+  'rb': 'ruby',
+  'swift': 'swift',
+  'gradle': 'gradle',
+  'toml': 'ini',
+  'ini': 'ini',
+  'vue': 'vue',
+  'ps1': 'powershell',
+  'bat': 'dos',
+  'cmd': 'dos',
+  'lua': 'lua',
+  'cmake': 'cmake',
 };
 
 /// Lenguaje de highlight.js para una ruta, o null si no se reconoce.
@@ -83,7 +123,14 @@ List<List<TextSpan>>? highlightLines(List<String> lines, String? language) {
       final parts = n.value!.split('\n');
       for (var i = 0; i < parts.length; i++) {
         if (i > 0) out.add([]);
-        if (parts[i].isNotEmpty) out.last.add(TextSpan(text: parts[i], style: color == null ? null : TextStyle(color: color)));
+        if (parts[i].isNotEmpty) {
+          out.last.add(
+            TextSpan(
+              text: parts[i],
+              style: color == null ? null : TextStyle(color: color),
+            ),
+          );
+        }
       }
     }
     for (final c in n.children ?? const <Node>[]) {

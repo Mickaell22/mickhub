@@ -48,7 +48,9 @@ ThemeData ghTheme() {
     canvasColor: Gh.bg,
     dividerColor: Gh.border,
     colorScheme: base.colorScheme.copyWith(primary: Gh.blue, onPrimary: Colors.white, surface: Gh.bg, onSurface: Gh.text),
-    textTheme: base.textTheme.apply(bodyColor: Gh.text, displayColor: Gh.text).copyWith(
+    textTheme: base.textTheme
+        .apply(bodyColor: Gh.text, displayColor: Gh.text)
+        .copyWith(
           bodyMedium: const TextStyle(fontSize: Gh.fontSize, color: Gh.text),
           bodySmall: const TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
           labelLarge: const TextStyle(fontSize: Gh.fontSize, fontWeight: FontWeight.w600),
@@ -59,9 +61,18 @@ ThemeData ghTheme() {
       fillColor: Gh.box,
       hintStyle: TextStyle(color: Gh.textSecondary, fontSize: Gh.fontSize),
       contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-      border: OutlineInputBorder(borderSide: BorderSide(color: Gh.border), borderRadius: BorderRadius.all(Radius.circular(Gh.radius))),
-      enabledBorder: OutlineInputBorder(borderSide: BorderSide(color: Gh.border), borderRadius: BorderRadius.all(Radius.circular(Gh.radius))),
-      focusedBorder: OutlineInputBorder(borderSide: BorderSide(color: Gh.blue), borderRadius: BorderRadius.all(Radius.circular(Gh.radius))),
+      border: OutlineInputBorder(
+        borderSide: BorderSide(color: Gh.border),
+        borderRadius: BorderRadius.all(Radius.circular(Gh.radius)),
+      ),
+      enabledBorder: OutlineInputBorder(
+        borderSide: BorderSide(color: Gh.border),
+        borderRadius: BorderRadius.all(Radius.circular(Gh.radius)),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderSide: BorderSide(color: Gh.blue),
+        borderRadius: BorderRadius.all(Radius.circular(Gh.radius)),
+      ),
     ),
     filledButtonTheme: FilledButtonThemeData(
       style: FilledButton.styleFrom(
@@ -71,12 +82,34 @@ ThemeData ghTheme() {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(Gh.radius)),
       ),
     ),
+    // Botón secundario de Desktop: gris (`--secondary-button-background`), texto claro.
+    outlinedButtonTheme: OutlinedButtonThemeData(
+      style: OutlinedButton.styleFrom(
+        backgroundColor: Gh.hover,
+        foregroundColor: Gh.text,
+        side: const BorderSide(color: Gh.border),
+        textStyle: const TextStyle(fontSize: Gh.fontSize),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(Gh.radius)),
+      ),
+    ),
+    textButtonTheme: TextButtonThemeData(style: TextButton.styleFrom(foregroundColor: Gh.link)),
     checkboxTheme: CheckboxThemeData(
       visualDensity: VisualDensity.compact,
       materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
       fillColor: WidgetStateProperty.resolveWith((s) => s.contains(WidgetState.selected) ? Gh.blue : null),
     ),
-    tooltipTheme: const TooltipThemeData(textStyle: TextStyle(fontSize: Gh.fontSizeSm, color: Gh.text), decoration: BoxDecoration(color: Gh.box)),
+    dialogTheme: DialogThemeData(
+      backgroundColor: Gh.bg,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(Gh.radius), side: Gh.divider),
+    ),
+    popupMenuTheme: PopupMenuThemeData(
+      color: Gh.boxAlt,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(Gh.radius), side: Gh.divider),
+    ),
+    tooltipTheme: const TooltipThemeData(
+      textStyle: TextStyle(fontSize: Gh.fontSizeSm, color: Gh.text),
+      decoration: BoxDecoration(color: Gh.box),
+    ),
   );
 }
 
@@ -90,4 +123,53 @@ Widget statusIcon(FileStatus s) {
     FileStatus.conflicted => (Icons.warning_amber_outlined, Gh.conflicted),
   };
   return Icon(icon, size: 16, color: color);
+}
+
+/// Íconos elegibles para los grupos de repos (clave guardada -> ícono).
+const groupIcons = <String, IconData>{
+  'carpeta': Icons.folder_outlined,
+  'trabajo': Icons.work_outline,
+  'apps': Icons.apps,
+  'ia': Icons.smart_toy_outlined,
+  'codigo': Icons.code,
+  'web': Icons.language,
+  'movil': Icons.phone_android,
+  'base-datos': Icons.storage,
+  'nube': Icons.cloud_outlined,
+  'herramientas': Icons.build_outlined,
+  'universidad': Icons.school_outlined,
+  'ciencia': Icons.science_outlined,
+  'persona': Icons.person_outline,
+  'tienda': Icons.storefront_outlined,
+  'restaurante': Icons.restaurant,
+  'juegos': Icons.sports_esports_outlined,
+  'musica': Icons.music_note_outlined,
+  'libro': Icons.menu_book_outlined,
+  'seguridad': Icons.shield_outlined,
+  'bug': Icons.bug_report_outlined,
+  'cohete': Icons.rocket_launch_outlined,
+  'estrella': Icons.star_outline,
+  'corazon': Icons.favorite_border,
+  'casa': Icons.home_outlined,
+};
+
+IconData groupIcon(String? key) => groupIcons[key] ?? Icons.folder_outlined;
+
+/// Opción de menú contextual con ícono; [danger] la pinta en rojo.
+PopupMenuItem<T> menuItem<T>(T value, IconData icon, String text, {bool danger = false}) {
+  final color = danger ? Gh.deleted : Gh.text;
+  return PopupMenuItem<T>(
+    value: value,
+    height: 34,
+    child: Row(
+      children: [
+        Icon(icon, size: 16, color: danger ? Gh.deleted : Gh.textSecondary),
+        const SizedBox(width: Gh.sp),
+        Text(
+          text,
+          style: TextStyle(fontSize: Gh.fontSize, fontWeight: FontWeight.normal, color: color),
+        ),
+      ],
+    ),
+  );
 }
