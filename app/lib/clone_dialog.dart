@@ -43,8 +43,13 @@ class _CloneBodyState extends State<_CloneBody> {
   CloneFilter _filter = CloneFilter.all;
   String? _cloning;
 
-  /// Cuenta de la que se listan repos; null = GitHub con la credencial que tenga git.
-  late Account? _source = widget.settings.accounts.firstOrNull;
+  /// Lugares de donde listar repos: cada GitHub y cada organización de Azure de
+  /// cada cuenta. Sin cuentas, null = GitHub con la credencial que tenga git.
+  late final List<(Account, Target)> _sources = [
+    for (final a in widget.settings.accounts)
+      for (final t in a.targets) (a, t),
+  ];
+  late (Account, Target)? _source = _sources.firstOrNull;
   late final _dir = TextEditingController(text: widget.settings.reposDir);
 
   @override
@@ -67,15 +72,15 @@ class _CloneBodyState extends State<_CloneBody> {
     final source = _source;
     try {
       final List<Repo> repos;
-      if (source?.provider == Provider.azure) {
-        repos = await azureRepos(source!);
+      if (source?.$2.provider == Provider.azure) {
+        repos = await azureRepos(source!.$2.name);
       } else {
-        final token = source == null ? await credentialToken('github.com') : (await credentialFor(source))?['password'];
+        final token = source == null ? await credentialToken('github.com') : (await credentialFor(source.$2))?['password'];
         if (token == null) {
           setState(
             () => _error = source == null
                 ? 'Git no tiene credenciales de GitHub. Inicia sesión con "gh auth login" o con el Git Credential Manager y vuelve a cargar.'
-                : 'La cuenta ${source.label} no tiene sesión iniciada. Iníciala en Cuentas y vuelve a cargar.',
+                : '${source.$2.label} (${source.$1.label}) no tiene sesión iniciada. Iníciala en Cuentas y vuelve a cargar.',
           );
           return;
         }
@@ -123,21 +128,27 @@ class _CloneBodyState extends State<_CloneBody> {
             children: [
               const Text('Clonar un repositorio', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
               const Spacer(),
-              if (widget.settings.accounts.isNotEmpty)
-                DropdownButton<Account>(
+              if (_sources.isNotEmpty)
+                DropdownButton<(Account, Target)>(
                   value: _source,
                   isDense: true,
                   style: const TextStyle(fontSize: Gh.fontSize, color: Gh.text),
                   items: [
-                    for (final a in widget.settings.accounts)
+                    for (final src in _sources)
                       DropdownMenuItem(
-                        value: a,
-                        child: Row(children: [Icon(providerIcon(a.provider), size: 14), const SizedBox(width: 6), Text(a.label)]),
+                        value: src,
+                        child: Row(
+                          children: [
+                            Icon(targetIcon(src.$2.provider), size: 14),
+                            const SizedBox(width: 6),
+                            Text('${src.$1.label} · ${src.$2.label}'),
+                          ],
+                        ),
                       ),
                   ],
-                  onChanged: (a) {
+                  onChanged: (src) {
                     setState(() {
-                      _source = a;
+                      _source = src;
                       _owner = null;
                     });
                     _load();

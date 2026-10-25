@@ -1,22 +1,16 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mickhub/accounts.dart';
+import 'package:mickhub/avatar.dart';
 
 void main() {
-  const personal = Account(
-    id: 'p',
-    label: 'Personal',
-    provider: Provider.github,
-    org: '',
-    username: 'Mickaell22',
-    gitName: 'Mick',
-    gitEmail: 'mick@personal.test',
-  );
-  const otraGh = Account(id: 'o', label: 'Otra', provider: Provider.github, org: '', username: 'otra-cuenta');
+  const personal = Account(id: 'p', label: 'Personal', githubUser: 'Mickaell22', gitName: 'Mick', gitEmail: 'mick@personal.test');
+  const otraGh = Account(id: 'o', label: 'Otra', githubUser: 'otra-cuenta');
+  // El trabajo: un GitHub propio y los repos en una organización de Azure.
   const trabajo = Account(
     id: 't',
     label: 'Trabajo',
-    provider: Provider.azure,
-    org: 'LuckyERP',
+    githubUser: 'mmoran-trabajo',
+    azureOrgs: ['LuckyERP'],
     gitName: 'M. Morán',
     gitEmail: 'mmoran@empresa.test',
   );
@@ -34,24 +28,50 @@ void main() {
     expect(accountFor('https://dev.azure.com/luckyerp/P/_git/Erp', all)?.id, 't');
     expect(accountFor('https://luckyerp.visualstudio.com/P/_git/Erp', all)?.id, 't');
     expect(accountFor('https://github.com/Mickaell22/surco.git', all)?.id, 'p');
+    expect(accountFor('https://github.com/mmoran-trabajo/notas.git', all)?.id, 't');
     expect(accountFor('https://otra-cuenta@github.com/empresa/x.git', all)?.id, 'o');
-    expect(accountFor('https://github.com/empresa/x.git', all), isNull); // dos cuentas de GitHub y ninguna calza
-    expect(accountFor('https://github.com/empresa/x.git', [personal, trabajo])?.id, 'p'); // una sola: esa
+    expect(accountFor('https://github.com/empresa/x.git', all), isNull); // varias de GitHub y ninguna calza
+    expect(accountFor('https://github.com/empresa/x.git', [personal])?.id, 'p'); // una sola: esa
     expect(accountFor('https://dev.azure.com/OtraOrg/P/_git/x', all), isNull);
     expect(accountFor('https://github.com/Mickaell22/surco.git', all, overrideId: 't')?.id, 't');
   });
 
-  test('identidad y consulta de credencial por cuenta', () {
+  test('lugares, identidad y consulta de credencial por cuenta', () {
     expect(trabajo.identityArgs, ['-c', 'user.name=M. Morán', '-c', 'user.email=mmoran@empresa.test']);
     expect(otraGh.identityArgs, isEmpty);
-    expect(trabajo.credentialQuery(), 'protocol=https\nhost=dev.azure.com\npath=LuckyERP\n\n');
-    expect(personal.credentialQuery(), contains('username=Mickaell22'));
-    expect(Account.fromJson(trabajo.toJson()).org, 'LuckyERP');
+    expect(trabajo.targets.map((t) => t.label), ['GitHub mmoran-trabajo', 'Azure LuckyERP']);
+    expect(trabajo.targets.last.credentialQuery(), 'protocol=https\nhost=dev.azure.com\npath=LuckyERP\n\n');
+    expect(personal.targets.single.credentialQuery(), contains('username=Mickaell22'));
+    expect(Account.fromJson(trabajo.toJson()).azureOrgs, ['LuckyERP']);
+    expect(targetOf('https://LuckyERP@dev.azure.com/LuckyERP/P/_git/Erp'), const Target(Provider.azure, 'luckyerp'));
+  });
+
+  test('las cuentas guardadas con el formato viejo se convierten solas', () {
+    final gh = Account.fromJson({'id': '1', 'label': 'Personal', 'provider': 'github', 'org': '', 'username': 'Mickaell22'});
+    final az = Account.fromJson({'id': '2', 'label': 'Trabajo', 'provider': 'azure', 'org': 'LuckyERP'});
+    expect(gh.githubUser, 'Mickaell22');
+    expect(gh.azureOrgs, isEmpty);
+    expect(az.githubUser, isNull);
+    expect(az.azureOrgs, ['LuckyERP']);
   });
 
   test('isAuthError reconoce credenciales vencidas de git', () {
     expect(isAuthError("fatal: Authentication failed for 'https://dev.azure.com/x/'"), isTrue);
     expect(isAuthError('fatal: could not read Username for https://dev.azure.com: terminal prompts disabled'), isTrue);
     expect(isAuthError('error: Your local changes would be overwritten by merge'), isFalse);
+  });
+
+  test('avatares: noreply de GitHub por id y el resto por email', () {
+    expect(avatarForEmail('123+mick@users.noreply.github.com', size: 40), 'https://avatars.githubusercontent.com/u/123?s=40');
+    expect(avatarForEmail('Ana@Empresa.com', size: 40), 'https://avatars.githubusercontent.com/u/e?email=ana%40empresa.com&s=40');
+  });
+
+  test('commitWebUrl arma el link del commit en GitHub y Azure', () {
+    expect(commitWebUrl('https://github.com/Mickaell22/mickhub.git', 'abc'), 'https://github.com/Mickaell22/mickhub/commit/abc');
+    expect(commitWebUrl('git@github.com:Mickaell22/surco.git', 'abc'), 'https://github.com/Mickaell22/surco/commit/abc');
+    expect(
+      commitWebUrl('https://LuckyERP@dev.azure.com/LuckyERP/ERP/_git/Erp_DB', 'abc'),
+      'https://dev.azure.com/LuckyERP/ERP/_git/Erp_DB/commit/abc',
+    );
   });
 }

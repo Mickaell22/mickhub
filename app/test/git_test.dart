@@ -32,11 +32,12 @@ void main() {
 
   test('parseLog separa campos y commits', () {
     final c = parseLog(
-      'abc1234567\x1fAna\x1f2026-10-20T10:00:00-05:00\x1ffix: algo\x1e\nfff0000000\x1fLuis\x1f2026-10-19T09:00:00Z\x1fajustes\x1e\n',
+      'abc1234567\x1fAna\x1f2026-10-20T10:00:00-05:00\x1ffix: algo\x1fana@x.com\x1e\nfff0000000\x1fLuis\x1f2026-10-19T09:00:00Z\x1fajustes\x1e\n',
     );
     expect(c.length, 2);
     expect(c[0].shortHash, 'abc1234');
     expect(c[1].summary, 'ajustes');
+    expect((c[0].email, c[1].email), ('ana@x.com', ''));
   });
 
   test('parseDiff numera líneas y detecta binarios', () {

@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'accounts.dart';
+import 'avatar.dart';
+import 'system.dart';
 import 'diff_view.dart';
 import 'git.dart';
 import 'theme.dart';
@@ -614,7 +616,15 @@ class _ChangesPaneState extends State<ChangesPane> {
       message: a == null ? 'Identidad de la configuración de git' : 'Cuenta ${a.label}',
       child: Row(
         children: [
-          Icon(a == null ? Icons.person_outline : Icons.badge_outlined, size: 14, color: who == null ? Gh.deleted : Gh.textSecondary),
+          if (who == null)
+            const Icon(Icons.person_off_outlined, size: 14, color: Gh.deleted)
+          else
+            Avatar(
+              user: a?.githubUser,
+              email: a != null && a.hasIdentity ? a.gitEmail : RegExp(r'<(.*)>').firstMatch(who)?[1],
+              name: a?.gitName ?? who,
+              size: 16,
+            ),
           const SizedBox(width: 6),
           Expanded(
             child: Text(
@@ -687,11 +697,25 @@ class _ChangesPaneState extends State<ChangesPane> {
 
 /// Tab "Historial": commits de la rama actual, archivos del elegido y su diff.
 class HistoryPane extends StatefulWidget {
-  const HistoryPane({super.key, required this.repo, required this.ahead, required this.tick, required this.layout});
+  const HistoryPane({
+    super.key,
+    required this.repo,
+    required this.ahead,
+    required this.tick,
+    required this.layout,
+    required this.onChanged,
+    this.account,
+    this.originUrl,
+  });
   final String repo;
   final int ahead;
   final int tick;
   final Widget Function(Widget sidebar, Widget main) layout;
+
+  /// Algo cambió el repo (revertir, deshacer): el Shell refresca rama y cambios.
+  final VoidCallback onChanged;
+  final Account? account;
+  final String? originUrl;
 
   @override
   State<HistoryPane> createState() => _HistoryPaneState();
@@ -742,6 +766,59 @@ class _HistoryPaneState extends State<HistoryPane> {
     if (mounted && _file == f) setState(() => _diff = d);
   }
 
+  /// Acciones simples sobre commits ya hechos: copiar el hash, abrirlo en la
+  /// web, revertirlo (sirve aunque ya esté subido) y deshacer el último si
+  /// todavía no se subió.
+  Future<void> _commitMenu(Commit c, Offset at) async {
+    final isLast = _commits.isNotEmpty && _commits.first.hash == c.hash;
+    final unpushed = _commits.indexOf(c) < widget.ahead;
+    final web = commitWebUrl(widget.originUrl, c.hash);
+    final action = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(at.dx, at.dy, at.dx, at.dy),
+      items: [
+        menuItem('copy', Icons.content_copy, 'Copiar hash'),
+        if (web != null) menuItem('web', Icons.open_in_new, 'Ver en el navegador'),
+        const PopupMenuDivider(),
+        if (isLast && unpushed) menuItem('undo', Icons.undo, 'Deshacer este commit (vuelve a Cambios)'),
+        menuItem('revert', Icons.settings_backup_restore, 'Revertir este commit…', danger: true),
+      ],
+    );
+    if (!mounted) return;
+    try {
+      switch (action) {
+        case 'copy':
+          await Clipboard.setData(ClipboardData(text: c.hash));
+        case 'web':
+          await openFolder(web!); // xdg-open/explorer abren URLs igual que carpetas
+        case 'undo':
+          await undoLastCommit(widget.repo);
+          widget.onChanged();
+        case 'revert':
+          final ok = await showDialog<bool>(
+            context: context,
+            builder: (d) => AlertDialog(
+              title: const Text('Revertir commit', style: TextStyle(fontSize: 14)),
+              content: Text(
+                'Se crea un commit nuevo que deshace "${c.summary}" (${c.shortHash}). El commit original no se toca, '
+                'así que sirve aunque ya esté subido.',
+              ),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(d, false), child: const Text('Cancelar')),
+                FilledButton(onPressed: () => Navigator.pop(d, true), child: const Text('Revertir')),
+              ],
+            ),
+          );
+          if (ok == true) {
+            await revertCommit(widget.repo, c.hash, identity: widget.account?.identityArgs ?? const []);
+            widget.onChanged();
+          }
+      }
+    } on GitException catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final shown = _commits.where((c) => matchesCommit(c, _query)).toList();
@@ -758,8 +835,11 @@ class _HistoryPaneState extends State<HistoryPane> {
                 height: Gh.commitRowHeight,
                 selected: c.hash == _selected?.hash,
                 onTap: () => _select(c),
+                onSecondary: (at) => _commitMenu(c, at),
                 child: Row(
                   children: [
+                    Avatar(email: c.email, name: c.author, size: 24),
+                    const SizedBox(width: Gh.sp),
                     Expanded(
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
@@ -822,10 +902,19 @@ class _HistoryPaneState extends State<HistoryPane> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     SelectableText(c.summary, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
-                    const SizedBox(height: 4),
-                    Text(
-                      '${c.author} · ${c.shortHash} · ${_files.length} archivos · ${timeAgo(c.date)}',
-                      style: Theme.of(context).textTheme.bodySmall,
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        Avatar(email: c.email, name: c.author, size: 18),
+                        const SizedBox(width: 6),
+                        Flexible(
+                          child: Text(
+                            '${c.author} · ${c.shortHash} · ${_files.length} archivos · ${timeAgo(c.date)}',
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ),
+                      ],
                     ),
                   ],
                 ),

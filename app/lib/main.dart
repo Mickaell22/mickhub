@@ -198,7 +198,7 @@ class _ShellState extends State<Shell> {
         await _protectedConflict(hit);
       } else if (isAuthError(e.message) && account != null && mounted) {
         // Típico de Azure: la sesión vence cada cierto tiempo. Login y reintento.
-        if (await askLogin(context, account)) {
+        if (await askLogin(context, account, targetOf(_origins[repo]))) {
           _sessions[account.id] = const Session(SessionState.ok);
           if (mounted) setState(() => _syncing = false);
           return _sync();
@@ -854,7 +854,16 @@ class _ShellState extends State<Shell> {
             trash: s.trash,
             account: _account,
           )
-        : HistoryPane(key: ValueKey(repo), repo: repo, ahead: _branch?.ahead ?? 0, tick: _tick, layout: layout);
+        : HistoryPane(
+            key: ValueKey(repo),
+            repo: repo,
+            ahead: _branch?.ahead ?? 0,
+            tick: _tick,
+            layout: layout,
+            onChanged: _refresh,
+            account: _account,
+            originUrl: _origins[repo],
+          );
   }
 
   Widget _tabBar() {

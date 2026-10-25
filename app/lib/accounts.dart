@@ -6,69 +6,83 @@ import 'github.dart';
 
 enum Provider { github, azure }
 
-/// Una cuenta: dónde vive (GitHub o una organización de Azure DevOps) y con qué
-/// nombre y email firma los commits. MickHub no guarda tokens: los pide al
-/// credential helper de git (gh o Git Credential Manager) cada vez.
-class Account {
-  const Account({
-    required this.id,
-    required this.label,
-    required this.provider,
-    required this.org,
-    this.username,
-    this.gitName = '',
-    this.gitEmail = '',
-  });
-
-  factory Account.fromJson(Map<String, dynamic> j) => Account(
-    id: j['id'],
-    label: j['label'],
-    provider: Provider.values.byName(j['provider']),
-    org: j['org'] ?? '',
-    username: j['username'],
-    gitName: j['gitName'] ?? '',
-    gitEmail: j['gitEmail'] ?? '',
-  );
-
-  final String id, label;
+/// Un lugar donde la cuenta tiene repos: GitHub (con su usuario) o una
+/// organización de Azure DevOps. Cada uno tiene su propia credencial y sesión.
+class Target {
+  const Target(this.provider, this.name);
   final Provider provider;
 
-  /// GitHub: vacío. Azure DevOps: nombre de la organización (`dev.azure.com/<org>`).
-  final String org;
+  /// GitHub: usuario. Azure DevOps: organización (`dev.azure.com/<org>`).
+  final String name;
 
-  /// Usuario de la cuenta. En GitHub sirve para distinguir dos cuentas del mismo
-  /// host (el credential helper elige por usuario).
-  final String? username;
+  String get host => provider == Provider.github ? 'github.com' : 'dev.azure.com';
+  String get label => provider == Provider.github ? 'GitHub $name' : 'Azure $name';
+
+  /// Lo que se le pasa a `git credential`. En GitHub va el usuario para que el
+  /// helper elija la cuenta correcta si hay dos; en Azure, el path con la
+  /// organización (el GCM guarda una credencial por organización:
+  /// `credential.https://dev.azure.com.useHttpPath`).
+  String credentialQuery() => [
+    'protocol=https',
+    'host=$host',
+    if (provider == Provider.azure) 'path=$name',
+    if (provider == Provider.github && name.isNotEmpty) 'username=$name',
+    '',
+    '',
+  ].join('\n');
+
+  @override
+  bool operator ==(Object other) => other is Target && other.provider == provider && other.name.toLowerCase() == name.toLowerCase();
+  @override
+  int get hashCode => Object.hash(provider, name.toLowerCase());
+}
+
+/// Una cuenta es una identidad: con qué nombre y email firma los commits, y en
+/// qué lugares tiene repos. Por ejemplo "Trabajo": el GitHub del trabajo más la
+/// organización de Azure DevOps donde están los repos de la empresa. MickHub no
+/// guarda tokens: los pide al credential helper de git (gh o GCM) cada vez.
+class Account {
+  const Account({required this.id, required this.label, this.githubUser, this.azureOrgs = const [], this.gitName = '', this.gitEmail = ''});
+
+  /// Lee también el formato viejo (`provider` + `org`/`username`).
+  factory Account.fromJson(Map<String, dynamic> j) {
+    final old = j['provider'];
+    return Account(
+      id: j['id'],
+      label: j['label'],
+      githubUser: j['githubUser'] ?? (old == 'github' ? j['username'] : null),
+      azureOrgs: [...List<String>.from(j['azureOrgs'] ?? const []), if (old == 'azure' && (j['org'] ?? '').isNotEmpty) j['org']],
+      gitName: j['gitName'] ?? '',
+      gitEmail: j['gitEmail'] ?? '',
+    );
+  }
+
+  final String id, label;
+  final String? githubUser;
+  final List<String> azureOrgs;
   final String gitName, gitEmail;
 
   Map<String, dynamic> toJson() => {
     'id': id,
     'label': label,
-    'provider': provider.name,
-    'org': org,
-    'username': username,
+    'githubUser': githubUser,
+    'azureOrgs': azureOrgs,
     'gitName': gitName,
     'gitEmail': gitEmail,
   };
 
-  String get host => provider == Provider.github ? 'github.com' : 'dev.azure.com';
-
-  /// Lo que se le pasa a `git credential` para esta cuenta. En Azure va el path
-  /// con la organización porque el GCM guarda una credencial por organización
-  /// (`credential.https://dev.azure.com.useHttpPath`).
-  String credentialQuery() => [
-    'protocol=https',
-    'host=$host',
-    if (provider == Provider.azure) 'path=$org',
-    if (username != null && username!.isNotEmpty) 'username=$username',
-    '',
-    '',
-  ].join('\n');
+  List<Target> get targets => [
+    if (githubUser != null && githubUser!.isNotEmpty) Target(Provider.github, githubUser!),
+    for (final o in azureOrgs) Target(Provider.azure, o),
+  ];
 
   bool get hasIdentity => gitName.trim().isNotEmpty && gitEmail.trim().isNotEmpty;
 
   /// Argumentos `-c` para firmar commits con esta cuenta sin tocar la config del repo.
   List<String> get identityArgs => hasIdentity ? ['-c', 'user.name=$gitName', '-c', 'user.email=$gitEmail'] : const [];
+
+  /// Resumen de dónde vive: "GitHub mmoran-lucky · Azure LuckyERP".
+  String get places => targets.map((t) => t.label).join(' · ');
 }
 
 /// Partes útiles de la URL de un remoto (https o ssh).
@@ -100,6 +114,15 @@ Remote? parseRemote(String url) {
   return Remote(u.host.toLowerCase(), u.pathSegments.where((s) => s.isNotEmpty).toList(), user: user);
 }
 
+/// Lugar (GitHub o una organización de Azure) al que apunta un remoto.
+Target? targetOf(String? remoteUrl) {
+  final r = remoteUrl == null ? null : parseRemote(remoteUrl);
+  if (r == null) return null;
+  if (r.isAzure && r.owner != null) return Target(Provider.azure, r.owner!);
+  if (r.isGithub) return Target(Provider.github, r.user ?? r.owner ?? '');
+  return null;
+}
+
 /// Cuenta que corresponde a un repo: la elegida a mano, si hay; si no, la que
 /// calza con el remoto (organización en Azure; usuario o dueño en GitHub).
 Account? accountFor(String? remoteUrl, List<Account> accounts, {String? overrideId}) {
@@ -110,15 +133,14 @@ Account? accountFor(String? remoteUrl, List<Account> accounts, {String? override
   }
   final r = remoteUrl == null ? null : parseRemote(remoteUrl);
   if (r == null) return null;
+  bool same(String? a, String? b) => a != null && b != null && a.toLowerCase() == b.toLowerCase();
   if (r.isAzure) {
-    final org = r.owner?.toLowerCase();
-    return accounts.where((a) => a.provider == Provider.azure && a.org.toLowerCase() == org).firstOrNull;
+    return accounts.where((a) => a.azureOrgs.any((o) => same(o, r.owner))).firstOrNull;
   }
   if (r.isGithub) {
-    final gh = accounts.where((a) => a.provider == Provider.github).toList();
-    bool same(String? a, String? b) => a != null && b != null && a.toLowerCase() == b.toLowerCase();
-    return gh.where((a) => same(a.username, r.user)).firstOrNull ??
-        gh.where((a) => same(a.username, r.owner)).firstOrNull ??
+    final gh = accounts.where((a) => a.githubUser != null && a.githubUser!.isNotEmpty).toList();
+    return gh.where((a) => same(a.githubUser, r.user)).firstOrNull ??
+        gh.where((a) => same(a.githubUser, r.owner)).firstOrNull ??
         (gh.length == 1 ? gh.single : null);
   }
   return null;
@@ -141,10 +163,11 @@ class Session {
   };
 }
 
-/// Credencial de la cuenta sin abrir ventanas de login (el GCM no pregunta).
-Future<Map<String, String>?> credentialFor(Account a, {bool interactive = false}) async {
+/// Credencial de un lugar. Sin [interactive] no abre ventanas de login (el GCM
+/// no pregunta); con él, deja que el helper muestre su login.
+Future<Map<String, String>?> credentialFor(Target t, {bool interactive = false}) async {
   try {
-    final out = await git(['credential', 'fill'], stdin: a.credentialQuery(), env: {'GCM_INTERACTIVE': interactive ? 'auto' : 'never'});
+    final out = await git(['credential', 'fill'], stdin: t.credentialQuery(), env: {'GCM_INTERACTIVE': interactive ? 'auto' : 'never'});
     final kv = parseKeyValues(out);
     return kv['password'] == null ? null : kv;
   } on GitException {
@@ -152,30 +175,53 @@ Future<Map<String, String>?> credentialFor(Account a, {bool interactive = false}
   }
 }
 
-/// Verifica la sesión pidiendo la credencial y probándola contra la API.
-Future<Session> checkSession(Account a) async {
-  final cred = await credentialFor(a);
+/// Verifica la sesión de un lugar pidiendo la credencial y probándola contra la API.
+Future<Session> checkTarget(Target t) async {
+  final cred = await credentialFor(t);
   if (cred == null) return const Session(SessionState.missing);
   try {
-    final who = a.provider == Provider.github ? await _githubUser(cred['password']!) : await _azureUser(cred['password']!);
+    final who = t.provider == Provider.github ? await _githubUser(cred['password']!) : await _azureUser(cred['password']!);
     return who == null ? const Session(SessionState.expired) : Session(SessionState.ok, who);
   } catch (e) {
     return Session(SessionState.error, '$e');
   }
 }
 
-/// Inicia sesión: deja que el credential helper muestre su login (navegador del
-/// GCM) y guarda lo que devuelva con `credential approve`.
-Future<bool> login(Account a) async {
-  final old = await credentialFor(a);
-  if (old != null && (await checkSession(a)).state != SessionState.ok) {
-    // Credencial vencida: se descarta para que el helper pida una nueva.
+/// Estado de la cuenta: el peor de sus lugares, con el detalle de cada uno.
+Future<Session> checkSession(Account a) async {
+  final ts = a.targets;
+  if (ts.isEmpty) return const Session(SessionState.missing, 'sin GitHub ni Azure configurado');
+  final rs = await Future.wait(ts.map(checkTarget));
+  const order = [SessionState.expired, SessionState.missing, SessionState.error, SessionState.ok];
+  final worst = order.firstWhere((st) => rs.any((r) => r.state == st));
+  return Session(
+    worst,
+    [
+      for (var i = 0; i < ts.length; i++) '${ts[i].label}: ${rs[i].state == SessionState.ok ? rs[i].detail : rs[i].label.toLowerCase()}',
+    ].join(' · '),
+  );
+}
+
+/// Inicia sesión en un lugar: descarta la credencial vencida, deja que el
+/// helper muestre su login (navegador del GCM) y guarda lo que devuelva.
+Future<bool> loginTarget(Target t) async {
+  final old = await credentialFor(t);
+  if (old != null && (await checkTarget(t)).state != SessionState.ok) {
     await git(['credential', 'reject'], stdin: _credentialText(old), okCodes: {0, 1});
   }
-  final fresh = await credentialFor(a, interactive: true);
+  final fresh = await credentialFor(t, interactive: true);
   if (fresh == null) return false;
   await git(['credential', 'approve'], stdin: _credentialText(fresh), okCodes: {0, 1});
-  return (await checkSession(a)).state == SessionState.ok;
+  return (await checkTarget(t)).state == SessionState.ok;
+}
+
+/// Inicia sesión en todos los lugares de la cuenta que no estén conectados.
+Future<bool> login(Account a) async {
+  var ok = true;
+  for (final t in a.targets) {
+    if ((await checkTarget(t)).state != SessionState.ok) ok = await loginTarget(t) && ok;
+  }
+  return ok;
 }
 
 String _credentialText(Map<String, String> kv) => '${kv.entries.map((e) => '${e.key}=${e.value}').join('\n')}\n\n';
@@ -212,10 +258,10 @@ Future<String?> _azureUser(String token) async {
 List<String> azureAuthHeaders(String token) => ['Bearer $token', 'Basic ${base64Encode(utf8.encode(':$token'))}'];
 
 /// Repos de una organización de Azure DevOps (de todos sus proyectos).
-Future<List<Repo>> azureRepos(Account a) async {
-  final cred = await credentialFor(a);
-  if (cred == null) throw const HttpException('La cuenta no tiene sesión iniciada');
-  final url = Uri.parse('https://dev.azure.com/${Uri.encodeComponent(a.org)}/_apis/git/repositories?api-version=7.1');
+Future<List<Repo>> azureRepos(String org) async {
+  final cred = await credentialFor(Target(Provider.azure, org));
+  if (cred == null) throw HttpException('La organización $org no tiene sesión iniciada');
+  final url = Uri.parse('https://dev.azure.com/${Uri.encodeComponent(org)}/_apis/git/repositories?api-version=7.1');
   for (final auth in azureAuthHeaders(cred['password']!)) {
     final (status, body) = await _get(url, {'Authorization': auth});
     if (status == 200) {
@@ -243,4 +289,17 @@ Future<(int, String)> _get(Uri url, Map<String, String> headers) async {
   } finally {
     client.close();
   }
+}
+
+/// Página web de un commit en GitHub o Azure DevOps, según el remoto.
+String? commitWebUrl(String? remoteUrl, String hash) {
+  final r = remoteUrl == null ? null : parseRemote(remoteUrl);
+  if (r == null) return null;
+  final seg = [for (final s in r.segments) s.endsWith('.git') ? s.substring(0, s.length - 4) : s];
+  if (r.isGithub && seg.length >= 2) return 'https://github.com/${seg[0]}/${seg[1]}/commit/$hash';
+  if (r.host == 'dev.azure.com' && seg.length >= 4) return 'https://dev.azure.com/${seg[0]}/${seg[1]}/_git/${seg[3]}/commit/$hash';
+  if (r.host.endsWith('.visualstudio.com') && seg.length >= 3) {
+    return 'https://${r.host}/${seg[0]}/_git/${seg[2]}/commit/$hash';
+  }
+  return null;
 }

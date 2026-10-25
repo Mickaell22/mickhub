@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
 
 import 'accounts.dart';
+import 'avatar.dart';
 import 'settings.dart';
 import 'theme.dart';
 
-IconData providerIcon(Provider p) => p == Provider.github ? Icons.code : Icons.cloud_outlined;
+IconData targetIcon(Provider p) => p == Provider.github ? Icons.code : Icons.cloud_outlined;
 
 Color sessionColor(SessionState? s) => switch (s) {
   SessionState.ok => Gh.added,
@@ -12,6 +13,10 @@ Color sessionColor(SessionState? s) => switch (s) {
   SessionState.error => Gh.modified,
   null => Gh.textSecondary,
 };
+
+/// Foto de la cuenta: la de su usuario de GitHub, o la de su email.
+Widget accountAvatar(Account a, {double size = 20}) =>
+    Avatar(user: a.githubUser, email: a.gitEmail, name: a.gitName.isEmpty ? a.label : a.gitName, size: size);
 
 /// Panel de cuentas: estado de cada sesión, iniciar sesión, agregar y editar.
 /// [sessions] se actualiza en el lugar; [onChanged] avisa al Shell para que
@@ -39,13 +44,13 @@ Future<void> showAccountsDialog(BuildContext context, Settings s, Map<String, Se
             ],
           ),
           content: SizedBox(
-            width: 560,
+            width: 600,
             child: s.accounts.isEmpty
                 ? const Padding(
                     padding: EdgeInsets.symmetric(vertical: 24),
                     child: Text(
-                      'Agrega tus cuentas (la personal de GitHub, la del trabajo en Azure DevOps) para ver si su sesión '
-                      'está activa y para que cada repo haga commit con la suya.',
+                      'Agrega tus cuentas (la personal y la del trabajo) para ver si su sesión está activa y para que cada '
+                      'repo haga commit con la suya.',
                       style: TextStyle(color: Gh.textSecondary),
                     ),
                   )
@@ -58,7 +63,7 @@ Future<void> showAccountsDialog(BuildContext context, Settings s, Map<String, Se
                           decoration: const BoxDecoration(border: Border(bottom: Gh.divider)),
                           child: Row(
                             children: [
-                              Icon(providerIcon(a.provider), size: 20, color: Gh.textSecondary),
+                              accountAvatar(a, size: 36),
                               const SizedBox(width: Gh.sp),
                               Expanded(
                                 child: Column(
@@ -66,7 +71,7 @@ Future<void> showAccountsDialog(BuildContext context, Settings s, Map<String, Se
                                   children: [
                                     Text(a.label, style: const TextStyle(fontWeight: FontWeight.w600)),
                                     Text(
-                                      '${a.provider == Provider.github ? 'GitHub' : 'Azure DevOps · ${a.org}'}'
+                                      '${a.places.isEmpty ? 'Sin GitHub ni Azure' : a.places}'
                                       '${a.hasIdentity ? ' · firma como ${a.gitName} <${a.gitEmail}>' : ' · sin nombre/email para commits'}',
                                       style: const TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
                                     ),
@@ -80,8 +85,7 @@ Future<void> showAccountsDialog(BuildContext context, Settings s, Map<String, Se
                                                 ? 'Verificando…'
                                                 : sessions[a.id] == null
                                                 ? 'Sin verificar'
-                                                : '${sessions[a.id]!.label}${sessions[a.id]!.detail.isEmpty ? '' : ' · ${sessions[a.id]!.detail}'}',
-                                            overflow: TextOverflow.ellipsis,
+                                                : '${sessions[a.id]!.label} · ${sessions[a.id]!.detail}',
                                             style: const TextStyle(fontSize: Gh.fontSizeSm),
                                           ),
                                         ),
@@ -90,7 +94,7 @@ Future<void> showAccountsDialog(BuildContext context, Settings s, Map<String, Se
                                   ],
                                 ),
                               ),
-                              if (sessions[a.id]?.state != SessionState.ok)
+                              if (sessions[a.id] != null && sessions[a.id]!.state != SessionState.ok)
                                 TextButton.icon(
                                   onPressed: busy.contains(a.id) ? null : () => run(a, () => loginWithFeedback(c, a)),
                                   icon: const Icon(Icons.login, size: 16),
@@ -150,18 +154,18 @@ Future<void> showAccountsDialog(BuildContext context, Settings s, Map<String, Se
   );
 }
 
-/// Inicia sesión y, si no se pudo, explica qué hacer según el helper.
-Future<Session> loginWithFeedback(BuildContext context, Account a) async {
-  final ok = await login(a);
+/// Inicia sesión en [only] (o en todo lo vencido de la cuenta) y, si no se
+/// pudo, explica qué hacer.
+Future<Session> loginWithFeedback(BuildContext context, Account a, {Target? only}) async {
+  final ok = only == null ? await login(a) : await loginTarget(only);
   final session = await checkSession(a);
   if (!ok && context.mounted) {
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        duration: const Duration(seconds: 8),
+      const SnackBar(
+        duration: Duration(seconds: 8),
         content: Text(
-          a.provider == Provider.github
-              ? 'No se pudo iniciar sesión en GitHub. Si usas gh, corre "gh auth login" en una terminal y vuelve a verificar.'
-              : 'No se pudo iniciar sesión en Azure DevOps. Revisa que el Git Credential Manager esté instalado.',
+          'No se pudo iniciar sesión. En Windows revisa que el Git Credential Manager esté instalado; '
+          'en Linux con gh, corre "gh auth login" en una terminal y vuelve a verificar.',
         ),
       ),
     );
@@ -172,74 +176,78 @@ Future<Session> loginWithFeedback(BuildContext context, Account a) async {
 /// Crea (con [current] null) o edita una cuenta.
 Future<Account?> editAccount(BuildContext context, Account? current) async {
   final label = TextEditingController(text: current?.label);
-  final org = TextEditingController(text: current?.org);
-  final user = TextEditingController(text: current?.username);
+  final gh = TextEditingController(text: current?.githubUser);
+  final orgs = TextEditingController(text: current?.azureOrgs.join(', '));
   final name = TextEditingController(text: current?.gitName);
   final email = TextEditingController(text: current?.gitEmail);
-  var provider = current?.provider ?? Provider.github;
-  final ok = await showDialog<bool>(
-    context: context,
-    builder: (c) => StatefulBuilder(
-      builder: (c, setD) {
-        Widget field(TextEditingController ctrl, String hint, {String? help}) => Padding(
-          padding: const EdgeInsets.only(top: Gh.sp),
-          child: TextField(
-            controller: ctrl,
-            style: const TextStyle(fontSize: Gh.fontSize),
-            decoration: InputDecoration(labelText: hint, helperText: help, helperMaxLines: 2),
-          ),
-        );
-        return AlertDialog(
-          title: Text(current == null ? 'Agregar cuenta' : 'Editar cuenta', style: const TextStyle(fontSize: 14)),
-          content: SizedBox(
-            width: 440,
-            child: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  SegmentedButton<Provider>(
-                    segments: const [
-                      ButtonSegment(value: Provider.github, icon: Icon(Icons.code, size: 16), label: Text('GitHub')),
-                      ButtonSegment(value: Provider.azure, icon: Icon(Icons.cloud_outlined, size: 16), label: Text('Azure DevOps')),
-                    ],
-                    selected: {provider},
-                    onSelectionChanged: (v) => setD(() => provider = v.first),
-                  ),
-                  field(label, 'Nombre de la cuenta (p. ej. Personal, Trabajo)'),
-                  if (provider == Provider.azure)
-                    field(org, 'Organización', help: 'La parte de dev.azure.com/<organización> en la URL de tus repos.'),
-                  field(
-                    user,
-                    provider == Provider.github ? 'Usuario de GitHub' : 'Usuario (opcional)',
-                    help: provider == Provider.github ? 'Sirve para saber qué repos son de esta cuenta.' : null,
-                  ),
-                  field(name, 'Nombre para los commits'),
-                  field(email, 'Email para los commits', help: 'Con esto se firman los commits de los repos de esta cuenta.'),
-                ],
-              ),
-            ),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('Cancelar')),
-            FilledButton(onPressed: () => Navigator.pop(c, true), child: Text(current == null ? 'Agregar' : 'Guardar')),
-          ],
-        );
-      },
+  Widget field(TextEditingController ctrl, String hint, {String? help, IconData? icon}) => Padding(
+    padding: const EdgeInsets.only(top: Gh.sp),
+    child: TextField(
+      controller: ctrl,
+      style: const TextStyle(fontSize: Gh.fontSize),
+      decoration: InputDecoration(
+        labelText: hint,
+        helperText: help,
+        helperMaxLines: 2,
+        prefixIcon: icon == null ? null : Icon(icon, size: 16),
+      ),
     ),
   );
-  final result = ok == true && label.text.trim().isNotEmpty && (provider == Provider.github || org.text.trim().isNotEmpty)
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (c) => AlertDialog(
+      title: Text(current == null ? 'Agregar cuenta' : 'Editar cuenta', style: const TextStyle(fontSize: 14)),
+      content: SizedBox(
+        width: 460,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              field(label, 'Nombre de la cuenta (p. ej. Personal, Trabajo)', icon: Icons.badge_outlined),
+              field(name, 'Nombre para los commits', icon: Icons.person_outline),
+              field(
+                email,
+                'Email para los commits',
+                icon: Icons.alternate_email,
+                help: 'Con esto se firman los commits; también da la foto.',
+              ),
+              const Padding(
+                padding: EdgeInsets.only(top: Gh.sp * 1.5),
+                child: Text('Dónde están sus repos', style: TextStyle(fontWeight: FontWeight.w600)),
+              ),
+              field(gh, 'Usuario de GitHub (opcional)', icon: Icons.code),
+              field(
+                orgs,
+                'Organizaciones de Azure DevOps (opcional)',
+                icon: Icons.cloud_outlined,
+                help: 'La parte de dev.azure.com/<organización>. Varias separadas por coma.',
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('Cancelar')),
+        FilledButton(onPressed: () => Navigator.pop(c, true), child: Text(current == null ? 'Agregar' : 'Guardar')),
+      ],
+    ),
+  );
+  final orgList = [
+    for (final o in orgs.text.split(','))
+      if (o.trim().isNotEmpty) o.trim(),
+  ];
+  final result = ok == true && label.text.trim().isNotEmpty
       ? Account(
           id: current?.id ?? DateTime.now().microsecondsSinceEpoch.toString(),
           label: label.text.trim(),
-          provider: provider,
-          org: provider == Provider.azure ? org.text.trim() : '',
-          username: user.text.trim().isEmpty ? null : user.text.trim(),
+          githubUser: gh.text.trim().isEmpty ? null : gh.text.trim(),
+          azureOrgs: orgList,
           gitName: name.text.trim(),
           gitEmail: email.text.trim(),
         )
       : null;
-  for (final c in [label, org, user, name, email]) {
+  for (final c in [label, gh, orgs, name, email]) {
     c.dispose();
   }
   return result;
@@ -269,7 +277,7 @@ Future<String?> pickAccount(BuildContext context, List<Account> accounts, String
             children: [
               Icon(current == a.id ? Icons.radio_button_checked : Icons.radio_button_off, size: 16),
               const SizedBox(width: Gh.sp),
-              Icon(providerIcon(a.provider), size: 16, color: Gh.textSecondary),
+              accountAvatar(a, size: 18),
               const SizedBox(width: 6),
               Text(a.label),
             ],
@@ -279,9 +287,9 @@ Future<String?> pickAccount(BuildContext context, List<Account> accounts, String
   ),
 );
 
-/// La sesión de [a] venció en medio de una operación: ofrece iniciar sesión.
-/// Devuelve true si quedó conectada (para reintentar).
-Future<bool> askLogin(BuildContext context, Account a) async {
+/// La sesión de [a] en [target] venció en medio de una operación: ofrece
+/// iniciar sesión. Devuelve true si quedó conectada (para reintentar).
+Future<bool> askLogin(BuildContext context, Account a, Target? target) async {
   final go = await showDialog<bool>(
     context: context,
     builder: (c) => AlertDialog(
@@ -293,10 +301,10 @@ Future<bool> askLogin(BuildContext context, Account a) async {
         ],
       ),
       content: Text(
-        a.provider == Provider.azure
-            ? 'Azure DevOps pide volver a iniciar sesión cada cierto tiempo. Se abrirá el login del Git Credential Manager '
-                  'y después se reintenta la operación.'
-            : 'GitHub rechazó la credencial. Inicia sesión otra vez y se reintenta la operación.',
+        target?.provider == Provider.azure
+            ? 'Azure DevOps (${target!.name}) pide volver a iniciar sesión cada cierto tiempo. Se abrirá el login del '
+                  'Git Credential Manager y después se reintenta la operación.'
+            : 'El remoto rechazó la credencial. Inicia sesión otra vez y se reintenta la operación.',
       ),
       actions: [
         TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('Ahora no')),
@@ -309,5 +317,6 @@ Future<bool> askLogin(BuildContext context, Account a) async {
     ),
   );
   if (go != true || !context.mounted) return false;
-  return (await loginWithFeedback(context, a)).state == SessionState.ok;
+  final s = await loginWithFeedback(context, a, only: target);
+  return target == null ? s.state == SessionState.ok : (await checkTarget(target)).state == SessionState.ok;
 }

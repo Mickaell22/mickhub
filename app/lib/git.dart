@@ -140,8 +140,8 @@ Future<List<String>> localBranches(String repo) async =>
     LineSplitter.split(await git(['branch', '--format=%(refname:short)'], cwd: repo)).toList();
 
 class Commit {
-  const Commit(this.hash, this.author, this.date, this.summary);
-  final String hash, author, summary;
+  const Commit(this.hash, this.author, this.date, this.summary, {this.email = ''});
+  final String hash, author, summary, email;
   final DateTime date;
 
   String get shortHash => hash.substring(0, 7);
@@ -153,14 +153,15 @@ List<Commit> parseLog(String out) => [
     if (rec.trim().isNotEmpty)
       () {
         final f = rec.trim().split('\x1f');
-        return Commit(f[0], f[1], DateTime.parse(f[2]), f[3]);
+        // Campos: hash, autor, fecha, asunto y (opcional) email del autor.
+        return Commit(f[0], f[1], DateTime.parse(f[2]), f[3], email: f.length > 4 ? f[4] : '');
       }(),
 ];
 
 // ponytail: solo los últimos 300 commits; paginar cuando haga falta más.
 Future<List<Commit>> log(String repo) async {
   try {
-    return parseLog(await git(['log', '-n', '300', '--format=%H%x1f%an%x1f%aI%x1f%s%x1e'], cwd: repo));
+    return parseLog(await git(['log', '-n', '300', '--format=%H%x1f%an%x1f%aI%x1f%s%x1f%ae%x1e'], cwd: repo));
   } on GitException {
     return []; // repo sin commits
   }
@@ -357,3 +358,11 @@ Future<String?> gitIdentity(String repo) async {
   final email = (await git(['config', 'user.email'], cwd: repo, okCodes: {0, 1})).trim();
   return name.isEmpty && email.isEmpty ? null : '$name <$email>';
 }
+
+/// Crea un commit nuevo que deshace [hash]. Sirve aunque ya esté subido.
+Future<void> revertCommit(String repo, String hash, {List<String> identity = const []}) =>
+    git([...identity, 'revert', '--no-edit', hash], cwd: repo);
+
+/// Deshace el último commit sin perder sus cambios: vuelven a Cambios. Solo
+/// tiene sentido si todavía no se subió.
+Future<void> undoLastCommit(String repo) => git(['reset', '--soft', 'HEAD~1'], cwd: repo);
