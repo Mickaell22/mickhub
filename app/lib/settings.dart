@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'accounts.dart';
 import 'trash.dart';
 
 /// Preferencias en un JSON chico, como en Surco (sin shared_preferences).
@@ -27,6 +28,13 @@ class Settings extends ChangeNotifier {
   /// Grupos creados (nombre -> clave de ícono de [groupIcons]). Un grupo existe
   /// aunque todavía no tenga repos.
   Map<String, String> groupIcons = {};
+
+  /// Cuentas (GitHub, organizaciones de Azure DevOps) y con qué firman commits.
+  List<Account> accounts = [];
+
+  /// Cuenta forzada a mano para un repo (ruta -> id de cuenta); si no hay, se
+  /// deduce del remoto con [accountFor].
+  Map<String, String> repoAccounts = {};
 
   /// Comando para "Abrir en el editor".
   String editorCommand = 'code';
@@ -59,6 +67,8 @@ class Settings extends ChangeNotifier {
     groups = Map<String, String>.from(j['groups'] ?? {});
     editorCommand = j['editorCommand'] ?? 'code';
     groupIcons = Map<String, String>.from(j['groupIcons'] ?? {});
+    accounts = [for (final a in j['accounts'] ?? const []) Account.fromJson(a)];
+    repoAccounts = Map<String, String>.from(j['repoAccounts'] ?? {});
   }
 
   Future<void> update(void Function(Settings) change) async {
@@ -74,6 +84,8 @@ class Settings extends ChangeNotifier {
         'groups': groups,
         'editorCommand': editorCommand,
         'groupIcons': groupIcons,
+        'accounts': [for (final a in accounts) a.toJson()],
+        'repoAccounts': repoAccounts,
       }),
     );
   }

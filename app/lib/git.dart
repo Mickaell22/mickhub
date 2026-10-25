@@ -14,8 +14,14 @@ class GitException implements Exception {
 /// Sin prompts de terminal: si falta una credencial, falla en vez de colgarse.
 /// [okCodes] son los códigos de salida que no cuentan como error (p. ej. `git
 /// diff --no-index` sale con 1 cuando hay diferencias).
-Future<String> git(List<String> args, {String? cwd, String? stdin, Set<int> okCodes = const {0}}) async {
-  final p = await Process.start('git', args, workingDirectory: cwd, environment: {'GIT_TERMINAL_PROMPT': '0'});
+Future<String> git(
+  List<String> args, {
+  String? cwd,
+  String? stdin,
+  Set<int> okCodes = const {0},
+  Map<String, String> env = const {},
+}) async {
+  final p = await Process.start('git', args, workingDirectory: cwd, environment: {'GIT_TERMINAL_PROMPT': '0', ...env});
   final out = p.stdout.transform(utf8.decoder).join();
   final err = p.stderr.transform(utf8.decoder).join();
   if (stdin != null) p.stdin.write(stdin);
@@ -98,10 +104,12 @@ Future<bool> isTracked(String repo, String path) async {
 
 /// Commitea solo [paths], como GitHub Desktop: lo que no se eligió no entra
 /// aunque estuviera en el stage.
-Future<void> commit(String repo, List<String> paths, String summary, String description) async {
+/// [identity] son los `-c user.name=… -c user.email=…` de la cuenta del repo.
+Future<void> commit(String repo, List<String> paths, String summary, String description, {List<String> identity = const []}) async {
   await git(['reset', '-q'], cwd: repo, okCodes: {0, 1, 128}); // 128: repo sin commits todavía
   await git(['add', '-A', '--', ...paths], cwd: repo);
   await git([
+    ...identity,
     'commit',
     '-m',
     summary,
@@ -341,3 +349,11 @@ Future<List<String>> branchBases(String repo) async => [
 /// Crea una rama local desde [base] y se cambia a ella. Los cambios sin
 /// commitear viajan con ella (comportamiento normal de git).
 Future<void> createBranch(String repo, String name, String base) => git(['switch', '--no-track', '-c', name, base], cwd: repo);
+
+/// Identidad con la que git firmaría en [repo] sin cuenta de MickHub (config del
+/// repo o global): `Nombre <email>`, o null si no hay.
+Future<String?> gitIdentity(String repo) async {
+  final name = (await git(['config', 'user.name'], cwd: repo, okCodes: {0, 1})).trim();
+  final email = (await git(['config', 'user.email'], cwd: repo, okCodes: {0, 1})).trim();
+  return name.isEmpty && email.isEmpty ? null : '$name <$email>';
+}

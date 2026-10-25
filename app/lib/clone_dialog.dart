@@ -2,6 +2,8 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 
+import 'accounts.dart';
+import 'accounts_ui.dart';
 import 'git.dart';
 import 'github.dart';
 import 'settings.dart';
@@ -40,6 +42,9 @@ class _CloneBodyState extends State<_CloneBody> {
   String? _owner;
   CloneFilter _filter = CloneFilter.all;
   String? _cloning;
+
+  /// Cuenta de la que se listan repos; null = GitHub con la credencial que tenga git.
+  late Account? _source = widget.settings.accounts.firstOrNull;
   late final _dir = TextEditingController(text: widget.settings.reposDir);
 
   @override
@@ -59,20 +64,26 @@ class _CloneBodyState extends State<_CloneBody> {
       _repos = null;
       _error = null;
     });
-    final token = await credentialToken('github.com');
-    if (token == null) {
-      setState(
-        () => _error =
-            'Git no tiene credenciales de GitHub. Inicia sesión con '
-            '"gh auth login" o con el Git Credential Manager y vuelve a cargar.',
-      );
-      return;
-    }
+    final source = _source;
     try {
-      final repos = await githubRepos(token);
-      if (mounted) setState(() => _repos = repos);
+      final List<Repo> repos;
+      if (source?.provider == Provider.azure) {
+        repos = await azureRepos(source!);
+      } else {
+        final token = source == null ? await credentialToken('github.com') : (await credentialFor(source))?['password'];
+        if (token == null) {
+          setState(
+            () => _error = source == null
+                ? 'Git no tiene credenciales de GitHub. Inicia sesión con "gh auth login" o con el Git Credential Manager y vuelve a cargar.'
+                : 'La cuenta ${source.label} no tiene sesión iniciada. Iníciala en Cuentas y vuelve a cargar.',
+          );
+          return;
+        }
+        repos = await githubRepos(token);
+      }
+      if (mounted && _source == source) setState(() => _repos = repos);
     } catch (e) {
-      if (mounted) setState(() => _error = 'No se pudo traer la lista de repos: $e');
+      if (mounted && _source == source) setState(() => _error = 'No se pudo traer la lista de repos: $e');
     }
   }
 
@@ -112,6 +123,26 @@ class _CloneBodyState extends State<_CloneBody> {
             children: [
               const Text('Clonar un repositorio', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
               const Spacer(),
+              if (widget.settings.accounts.isNotEmpty)
+                DropdownButton<Account>(
+                  value: _source,
+                  isDense: true,
+                  style: const TextStyle(fontSize: Gh.fontSize, color: Gh.text),
+                  items: [
+                    for (final a in widget.settings.accounts)
+                      DropdownMenuItem(
+                        value: a,
+                        child: Row(children: [Icon(providerIcon(a.provider), size: 14), const SizedBox(width: 6), Text(a.label)]),
+                      ),
+                  ],
+                  onChanged: (a) {
+                    setState(() {
+                      _source = a;
+                      _owner = null;
+                    });
+                    _load();
+                  },
+                ),
               IconButton(tooltip: 'Recargar', iconSize: 16, onPressed: _load, icon: const Icon(Icons.refresh)),
               IconButton(tooltip: 'Cerrar', iconSize: 16, onPressed: () => Navigator.pop(context), icon: const Icon(Icons.close)),
             ],

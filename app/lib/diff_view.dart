@@ -43,8 +43,7 @@ List<DiffLine>? parseDiff(String diff) {
 /// Resalta en otro isolate. Tiene que ser una función de nivel superior: una
 /// closure creada dentro del State arrastra `this` (widgets, completers) y Dart
 /// no puede mandarla a otro isolate.
-Future<List<List<TextSpan>>?> highlightInIsolate(List<String> lines, String language) =>
-    Isolate.run(() => highlightLines(lines, language));
+Future<List<List<TextSpan>>?> highlightInIsolate(List<String> lines, String language) => Isolate.run(() => highlightLines(lines, language));
 
 /// Diff unificado al estilo de GitHub Desktop: dos columnas de números de 50 px,
 /// fondo verde/rojo por línea y resaltado de sintaxis según la extensión de [path].

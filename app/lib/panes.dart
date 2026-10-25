@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'accounts.dart';
 import 'diff_view.dart';
 import 'git.dart';
 import 'theme.dart';
@@ -129,6 +130,7 @@ class ChangesPane extends StatefulWidget {
     required this.onOpenFolder,
     required this.onOpenEditor,
     required this.trash,
+    this.account,
   });
   final String repo;
   final String branch;
@@ -139,6 +141,9 @@ class ChangesPane extends StatefulWidget {
   final VoidCallback onOpenEditor;
   final Trash trash;
 
+  /// Cuenta del repo: si tiene nombre y email, los commits se firman con ellos.
+  final Account? account;
+
   @override
   State<ChangesPane> createState() => _ChangesPaneState();
 }
@@ -147,6 +152,7 @@ class _ChangesPaneState extends State<ChangesPane> {
   List<FileChange> _files = [];
   List<Protected> _protected = [];
   List<Shelf> _shelves = [];
+  String? _gitIdentity; // la de git (repo o global), si el repo no tiene cuenta
   bool _showShelves = true;
   bool _showProtected = true;
   final _excluded = <String>{};
@@ -180,11 +186,13 @@ class _ChangesPaneState extends State<ChangesPane> {
     final files = await status(widget.repo);
     final locked = await protectedFiles(widget.repo);
     final shelved = await shelves(widget.repo);
+    final identity = await gitIdentity(widget.repo);
     if (!mounted) return;
     setState(() {
       _files = files;
       _protected = locked;
       _shelves = shelved;
+      _gitIdentity = identity;
       _excluded.retainAll(files.map((f) => f.path));
       if (!files.any((f) => f.path == _selected)) {
         _selected = files.isEmpty ? null : files.first.path;
@@ -490,7 +498,7 @@ class _ChangesPaneState extends State<ChangesPane> {
   Future<void> _commit() async {
     setState(() => _committing = true);
     try {
-      await commit(widget.repo, _included, _summary.text.trim(), _description.text);
+      await commit(widget.repo, _included, _summary.text.trim(), _description.text, identity: widget.account?.identityArgs ?? const []);
       _summary.clear();
       _description.clear();
       widget.onCommitted();
@@ -596,6 +604,30 @@ class _ChangesPaneState extends State<ChangesPane> {
     return widget.layout(sidebar, main);
   }
 
+  /// "Commit como …": deja a la vista con qué cuenta se firma, para no subir un
+  /// commit del trabajo con la cuenta personal (o al revés).
+  Widget _commitAs() {
+    final a = widget.account;
+    final who = a != null && a.hasIdentity ? '${a.gitName} <${a.gitEmail}>' : _gitIdentity;
+    final text = who == null ? 'Sin nombre/email de git configurado' : 'Commit como $who';
+    return Tooltip(
+      message: a == null ? 'Identidad de la configuración de git' : 'Cuenta ${a.label}',
+      child: Row(
+        children: [
+          Icon(a == null ? Icons.person_outline : Icons.badge_outlined, size: 14, color: who == null ? Gh.deleted : Gh.textSecondary),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              a == null ? text : '$text · ${a.label}',
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: Gh.fontSizeSm, color: who == null ? Gh.deleted : Gh.textSecondary),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _commitBox(int checked) {
     final can = checked > 0 && _summary.text.trim().isNotEmpty && !_committing;
     return Container(
@@ -607,6 +639,8 @@ class _ChangesPaneState extends State<ChangesPane> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          _commitAs(),
+          const SizedBox(height: 6),
           TextField(
             controller: _summary,
             style: const TextStyle(fontSize: Gh.fontSize),

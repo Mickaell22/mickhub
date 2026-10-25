@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'accounts.dart';
+import 'accounts_ui.dart';
 import 'clone_dialog.dart';
 import 'git.dart';
 import 'panes.dart';
@@ -44,6 +46,8 @@ class _ShellState extends State<Shell> {
 
   List<String> _repos = [];
   final _remotes = <String, String>{}; // ruta -> remoteKey de origin
+  final _origins = <String, String>{}; // ruta -> URL de origin
+  final _sessions = <String, Session>{}; // id de cuenta -> estado de su sesión
   String? _repo;
   BranchState? _branch;
   Foldout _foldout = Foldout.none;
@@ -59,7 +63,14 @@ class _ShellState extends State<Shell> {
   void initState() {
     super.initState();
     // Como Desktop: al volver a la ventana se refresca el estado del repo.
-    _lifecycle = AppLifecycleListener(onResume: _refresh);
+    // Al volver a la ventana: refrescar el repo y revisar si alguna sesión venció.
+    _lifecycle = AppLifecycleListener(
+      onResume: () {
+        _refresh();
+        _checkSessions();
+      },
+    );
+    _checkSessions();
     // Si alguien edita el JSON de ajustes desde fuera (Claude Code clonando o
     // agrupando repos), se recarga la lista sin reiniciar la app.
     _settingsWatch = s.watch(() {
@@ -87,7 +98,10 @@ class _ShellState extends State<Shell> {
     if (current != null && (reopen || current != _repo)) await _open(current);
     final urls = await Future.wait(repos.map(originUrl));
     for (var i = 0; i < repos.length; i++) {
-      if (urls[i] != null) _remotes[repos[i]] = remoteKey(urls[i]!);
+      if (urls[i] != null) {
+        _remotes[repos[i]] = remoteKey(urls[i]!);
+        _origins[repos[i]] = urls[i]!;
+      }
     }
   }
 
@@ -169,7 +183,7 @@ class _ShellState extends State<Shell> {
       if (b.upstream == null) {
         await git(['push', '-u', 'origin', 'HEAD'], cwd: repo);
       } else if (b.behind > 0) {
-        await git(['pull'], cwd: repo);
+        await git([...?_account?.identityArgs, 'pull'], cwd: repo); // un pull puede crear un merge
       } else if (b.ahead > 0) {
         await git(['push'], cwd: repo);
       } else {
@@ -179,8 +193,16 @@ class _ShellState extends State<Shell> {
     } on GitException catch (e) {
       final locked = await protectedFiles(repo);
       final hit = locked.where((p) => e.message.contains(p.path)).map((p) => p.path).toList();
+      final account = _account;
       if (hit.isNotEmpty) {
         await _protectedConflict(hit);
+      } else if (isAuthError(e.message) && account != null && mounted) {
+        // Típico de Azure: la sesión vence cada cierto tiempo. Login y reintento.
+        if (await askLogin(context, account)) {
+          _sessions[account.id] = const Session(SessionState.ok);
+          if (mounted) setState(() => _syncing = false);
+          return _sync();
+        }
       } else {
         _snack(e.message);
       }
@@ -189,6 +211,21 @@ class _ShellState extends State<Shell> {
       await _refresh();
     }
   }
+
+  /// Cuenta del repo abierto: la forzada a mano o la que calza con su remoto.
+  Account? get _account => _repo == null ? null : accountFor(_origins[_repo], s.accounts, overrideId: s.repoAccounts[_repo]);
+
+  Future<void> _checkSessions() async {
+    final results = await Future.wait(s.accounts.map(checkSession));
+    if (!mounted) return;
+    setState(() {
+      for (var i = 0; i < s.accounts.length && i < results.length; i++) {
+        _sessions[s.accounts[i].id] = results[i];
+      }
+    });
+  }
+
+  bool get _sessionProblem => s.accounts.any((a) => _sessions[a.id] != null && _sessions[a.id]!.state != SessionState.ok);
 
   /// El remoto cambió un archivo que el usuario tiene protegido: git no puede
   /// traerlo sin pisar su versión local, así que se explica qué hacer.
@@ -302,6 +339,17 @@ class _ShellState extends State<Shell> {
             onTap: _repo == null || b == null || _syncing ? null : _sync,
           ),
           const Spacer(),
+          IconButton(
+            tooltip: _sessionProblem ? 'Cuentas: hay una sesión vencida' : 'Cuentas',
+            iconSize: 18,
+            onPressed: () => showAccountsDialog(context, s, _sessions, () => setState(() {})),
+            icon: Badge(
+              isLabelVisible: _sessionProblem,
+              backgroundColor: Gh.deleted,
+              smallSize: 8,
+              child: const Icon(Icons.manage_accounts_outlined),
+            ),
+          ),
           if (_repo != null) ...[
             IconButton(
               tooltip: 'Abrir carpeta',
@@ -345,6 +393,7 @@ class _ShellState extends State<Shell> {
         menuItem('copy', Icons.content_copy, 'Copiar ruta'),
         const PopupMenuDivider(),
         menuItem('group', Icons.drive_file_move_outlined, 'Mover a grupo…'),
+        if (s.accounts.isNotEmpty) menuItem('account', Icons.badge_outlined, 'Cuenta de este repo…'),
         if (group != null) menuItem('ungroup', Icons.folder_off_outlined, 'Quitar del grupo "$group"'),
         if (s.extraRepos.contains(repo)) ...[
           const PopupMenuDivider(),
@@ -359,6 +408,13 @@ class _ShellState extends State<Shell> {
         await _openEditor(repo);
       case 'copy':
         await Clipboard.setData(ClipboardData(text: repo));
+      case 'account':
+        if (!mounted) return;
+        final id = await pickAccount(context, s.accounts, s.repoAccounts[repo]);
+        if (id != null) {
+          await s.update((x) => x.repoAccounts = id.isEmpty ? ({...x.repoAccounts}..remove(repo)) : {...x.repoAccounts, repo: id});
+          setState(() {});
+        }
       case 'group':
         final name = await _askGroup(group);
         if (name != null) await s.update((x) => x.groups = {...x.groups, repo: name});
@@ -537,6 +593,34 @@ class _ShellState extends State<Shell> {
     });
     setState(() {});
     return newName;
+  }
+
+  /// Menú "Agregar" del panel de repos. Se abre con el context del Shell y no
+  /// con un PopupMenuButton dentro del panel: el panel se cierra al elegir una
+  /// opción y, si el menú dependiera de él, Flutter falla en plena animación de
+  /// salida ('_dependents.isEmpty').
+  Future<void> _addMenu(BuildContext button) async {
+    final box = button.findRenderObject()! as RenderBox;
+    final at = box.localToGlobal(Offset(0, box.size.height));
+    final action = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(at.dx, at.dy, at.dx, at.dy),
+      items: [
+        menuItem('clone', Icons.download, 'Clonar repositorio…'),
+        menuItem('local', Icons.create_new_folder_outlined, 'Agregar repositorio local…'),
+        const PopupMenuDivider(),
+        menuItem('group', Icons.workspaces_outline, 'Nuevo grupo…'),
+      ],
+    );
+    switch (action) {
+      case 'clone':
+        await _clone();
+      case 'local':
+        await _addLocal();
+      case 'group':
+        setState(() => _foldout = Foldout.none);
+        await _editGroup();
+    }
   }
 
   Future<void> _groupMenu(String group, Offset at) async {
@@ -768,6 +852,7 @@ class _ShellState extends State<Shell> {
             onOpenFolder: _openFolder,
             onOpenEditor: () => _openEditor(repo),
             trash: s.trash,
+            account: _account,
           )
         : HistoryPane(key: ValueKey(repo), repo: repo, ahead: _branch?.ahead ?? 0, tick: _tick, layout: layout);
   }
@@ -808,27 +893,16 @@ class _ShellState extends State<Shell> {
     onSecondary: _repoMenu,
     hint: 'Filtrar',
     emptyText: s.reposDir == null ? 'No hay repositorios. Clona uno o agrega uno local.' : 'No hay repositorios en ${s.reposDir}.',
-    action: PopupMenuButton<VoidCallback>(
-      tooltip: 'Agregar',
-      onSelected: (f) => f(),
-      itemBuilder: (_) => [
-        menuItem<VoidCallback>(_clone, Icons.download, 'Clonar repositorio…'),
-        menuItem<VoidCallback>(_addLocal, Icons.create_new_folder_outlined, 'Agregar repositorio local…'),
-        const PopupMenuDivider(),
-        menuItem<VoidCallback>(
-          () {
-            setState(() => _foldout = Foldout.none);
-            _editGroup();
-          },
-          Icons.workspaces_outline,
-          'Nuevo grupo…',
+    action: Builder(
+      builder: (button) => InkWell(
+        borderRadius: BorderRadius.circular(Gh.radius),
+        onTap: () => _addMenu(button),
+        child: Container(
+          height: 32,
+          padding: const EdgeInsets.symmetric(horizontal: Gh.sp),
+          decoration: BoxDecoration(color: Gh.hover, borderRadius: BorderRadius.circular(Gh.radius)),
+          child: const Row(children: [Text('Agregar'), Icon(Icons.arrow_drop_down, size: 18)]),
         ),
-      ],
-      child: Container(
-        height: 32,
-        padding: const EdgeInsets.symmetric(horizontal: Gh.sp),
-        decoration: BoxDecoration(color: Gh.hover, borderRadius: BorderRadius.circular(Gh.radius)),
-        child: const Row(children: [Text('Agregar'), Icon(Icons.arrow_drop_down, size: 18)]),
       ),
     ),
     onTap: _open,

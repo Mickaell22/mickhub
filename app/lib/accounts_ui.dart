@@ -1,0 +1,313 @@
+import 'package:flutter/material.dart';
+
+import 'accounts.dart';
+import 'settings.dart';
+import 'theme.dart';
+
+IconData providerIcon(Provider p) => p == Provider.github ? Icons.code : Icons.cloud_outlined;
+
+Color sessionColor(SessionState? s) => switch (s) {
+  SessionState.ok => Gh.added,
+  SessionState.expired || SessionState.missing => Gh.deleted,
+  SessionState.error => Gh.modified,
+  null => Gh.textSecondary,
+};
+
+/// Panel de cuentas: estado de cada sesión, iniciar sesión, agregar y editar.
+/// [sessions] se actualiza en el lugar; [onChanged] avisa al Shell para que
+/// repinte la barra.
+Future<void> showAccountsDialog(BuildContext context, Settings s, Map<String, Session> sessions, VoidCallback onChanged) {
+  final busy = <String>{}; // fuera del builder: sobrevive a los setD
+  return showDialog<void>(
+    context: context,
+    builder: (c) => StatefulBuilder(
+      builder: (c, setD) {
+        Future<void> run(Account a, Future<Session> Function() op) async {
+          setD(() => busy.add(a.id));
+          sessions[a.id] = await op();
+          busy.remove(a.id);
+          onChanged();
+          if (c.mounted) setD(() {});
+        }
+
+        return AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.manage_accounts_outlined, size: 18),
+              SizedBox(width: 8),
+              Text('Cuentas', style: TextStyle(fontSize: 14)),
+            ],
+          ),
+          content: SizedBox(
+            width: 560,
+            child: s.accounts.isEmpty
+                ? const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 24),
+                    child: Text(
+                      'Agrega tus cuentas (la personal de GitHub, la del trabajo en Azure DevOps) para ver si su sesión '
+                      'está activa y para que cada repo haga commit con la suya.',
+                      style: TextStyle(color: Gh.textSecondary),
+                    ),
+                  )
+                : Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      for (final a in s.accounts)
+                        Container(
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                          decoration: const BoxDecoration(border: Border(bottom: Gh.divider)),
+                          child: Row(
+                            children: [
+                              Icon(providerIcon(a.provider), size: 20, color: Gh.textSecondary),
+                              const SizedBox(width: Gh.sp),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(a.label, style: const TextStyle(fontWeight: FontWeight.w600)),
+                                    Text(
+                                      '${a.provider == Provider.github ? 'GitHub' : 'Azure DevOps · ${a.org}'}'
+                                      '${a.hasIdentity ? ' · firma como ${a.gitName} <${a.gitEmail}>' : ' · sin nombre/email para commits'}',
+                                      style: const TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
+                                    ),
+                                    Row(
+                                      children: [
+                                        Icon(Icons.circle, size: 8, color: sessionColor(sessions[a.id]?.state)),
+                                        const SizedBox(width: 4),
+                                        Flexible(
+                                          child: Text(
+                                            busy.contains(a.id)
+                                                ? 'Verificando…'
+                                                : sessions[a.id] == null
+                                                ? 'Sin verificar'
+                                                : '${sessions[a.id]!.label}${sessions[a.id]!.detail.isEmpty ? '' : ' · ${sessions[a.id]!.detail}'}',
+                                            overflow: TextOverflow.ellipsis,
+                                            style: const TextStyle(fontSize: Gh.fontSizeSm),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              if (sessions[a.id]?.state != SessionState.ok)
+                                TextButton.icon(
+                                  onPressed: busy.contains(a.id) ? null : () => run(a, () => loginWithFeedback(c, a)),
+                                  icon: const Icon(Icons.login, size: 16),
+                                  label: const Text('Iniciar sesión'),
+                                ),
+                              PopupMenuButton<String>(
+                                tooltip: 'Más',
+                                icon: const Icon(Icons.more_vert, size: 18),
+                                onSelected: (v) async {
+                                  if (v == 'check') await run(a, () => checkSession(a));
+                                  if (v == 'edit' && c.mounted) {
+                                    final edited = await editAccount(c, a);
+                                    if (edited != null) {
+                                      await s.update((x) => x.accounts = [for (final o in x.accounts) o.id == a.id ? edited : o]);
+                                      await run(edited, () => checkSession(edited));
+                                    }
+                                  }
+                                  if (v == 'delete') {
+                                    await s.update((x) {
+                                      x.accounts = [...x.accounts]..removeWhere((o) => o.id == a.id);
+                                      x.repoAccounts = {...x.repoAccounts}..removeWhere((_, id) => id == a.id);
+                                    });
+                                    sessions.remove(a.id);
+                                    onChanged();
+                                    setD(() {});
+                                  }
+                                },
+                                itemBuilder: (_) => [
+                                  menuItem('check', Icons.refresh, 'Verificar sesión'),
+                                  menuItem('edit', Icons.edit_outlined, 'Editar…'),
+                                  const PopupMenuDivider(),
+                                  menuItem('delete', Icons.delete_outline, 'Quitar cuenta', danger: true),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
+          ),
+          actions: [
+            TextButton.icon(
+              onPressed: () async {
+                final a = await editAccount(c, null);
+                if (a == null) return;
+                await s.update((x) => x.accounts = [...x.accounts, a]);
+                await run(a, () => checkSession(a));
+              },
+              icon: const Icon(Icons.person_add_alt, size: 16),
+              label: const Text('Agregar cuenta'),
+            ),
+            FilledButton(onPressed: () => Navigator.pop(c), child: const Text('Cerrar')),
+          ],
+        );
+      },
+    ),
+  );
+}
+
+/// Inicia sesión y, si no se pudo, explica qué hacer según el helper.
+Future<Session> loginWithFeedback(BuildContext context, Account a) async {
+  final ok = await login(a);
+  final session = await checkSession(a);
+  if (!ok && context.mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        duration: const Duration(seconds: 8),
+        content: Text(
+          a.provider == Provider.github
+              ? 'No se pudo iniciar sesión en GitHub. Si usas gh, corre "gh auth login" en una terminal y vuelve a verificar.'
+              : 'No se pudo iniciar sesión en Azure DevOps. Revisa que el Git Credential Manager esté instalado.',
+        ),
+      ),
+    );
+  }
+  return session;
+}
+
+/// Crea (con [current] null) o edita una cuenta.
+Future<Account?> editAccount(BuildContext context, Account? current) async {
+  final label = TextEditingController(text: current?.label);
+  final org = TextEditingController(text: current?.org);
+  final user = TextEditingController(text: current?.username);
+  final name = TextEditingController(text: current?.gitName);
+  final email = TextEditingController(text: current?.gitEmail);
+  var provider = current?.provider ?? Provider.github;
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (c) => StatefulBuilder(
+      builder: (c, setD) {
+        Widget field(TextEditingController ctrl, String hint, {String? help}) => Padding(
+          padding: const EdgeInsets.only(top: Gh.sp),
+          child: TextField(
+            controller: ctrl,
+            style: const TextStyle(fontSize: Gh.fontSize),
+            decoration: InputDecoration(labelText: hint, helperText: help, helperMaxLines: 2),
+          ),
+        );
+        return AlertDialog(
+          title: Text(current == null ? 'Agregar cuenta' : 'Editar cuenta', style: const TextStyle(fontSize: 14)),
+          content: SizedBox(
+            width: 440,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  SegmentedButton<Provider>(
+                    segments: const [
+                      ButtonSegment(value: Provider.github, icon: Icon(Icons.code, size: 16), label: Text('GitHub')),
+                      ButtonSegment(value: Provider.azure, icon: Icon(Icons.cloud_outlined, size: 16), label: Text('Azure DevOps')),
+                    ],
+                    selected: {provider},
+                    onSelectionChanged: (v) => setD(() => provider = v.first),
+                  ),
+                  field(label, 'Nombre de la cuenta (p. ej. Personal, Trabajo)'),
+                  if (provider == Provider.azure)
+                    field(org, 'Organización', help: 'La parte de dev.azure.com/<organización> en la URL de tus repos.'),
+                  field(
+                    user,
+                    provider == Provider.github ? 'Usuario de GitHub' : 'Usuario (opcional)',
+                    help: provider == Provider.github ? 'Sirve para saber qué repos son de esta cuenta.' : null,
+                  ),
+                  field(name, 'Nombre para los commits'),
+                  field(email, 'Email para los commits', help: 'Con esto se firman los commits de los repos de esta cuenta.'),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('Cancelar')),
+            FilledButton(onPressed: () => Navigator.pop(c, true), child: Text(current == null ? 'Agregar' : 'Guardar')),
+          ],
+        );
+      },
+    ),
+  );
+  final result = ok == true && label.text.trim().isNotEmpty && (provider == Provider.github || org.text.trim().isNotEmpty)
+      ? Account(
+          id: current?.id ?? DateTime.now().microsecondsSinceEpoch.toString(),
+          label: label.text.trim(),
+          provider: provider,
+          org: provider == Provider.azure ? org.text.trim() : '',
+          username: user.text.trim().isEmpty ? null : user.text.trim(),
+          gitName: name.text.trim(),
+          gitEmail: email.text.trim(),
+        )
+      : null;
+  for (final c in [label, org, user, name, email]) {
+    c.dispose();
+  }
+  return result;
+}
+
+/// Elige la cuenta de un repo: una concreta o "Automática" (según el remoto).
+/// Devuelve '' para automática, null si se canceló.
+Future<String?> pickAccount(BuildContext context, List<Account> accounts, String? current) => showDialog<String>(
+  context: context,
+  builder: (c) => SimpleDialog(
+    title: const Text('Cuenta de este repositorio', style: TextStyle(fontSize: 14)),
+    children: [
+      SimpleDialogOption(
+        onPressed: () => Navigator.pop(c, ''),
+        child: Row(
+          children: [
+            Icon(current == null ? Icons.radio_button_checked : Icons.radio_button_off, size: 16),
+            const SizedBox(width: Gh.sp),
+            const Text('Automática (según el remoto)'),
+          ],
+        ),
+      ),
+      for (final a in accounts)
+        SimpleDialogOption(
+          onPressed: () => Navigator.pop(c, a.id),
+          child: Row(
+            children: [
+              Icon(current == a.id ? Icons.radio_button_checked : Icons.radio_button_off, size: 16),
+              const SizedBox(width: Gh.sp),
+              Icon(providerIcon(a.provider), size: 16, color: Gh.textSecondary),
+              const SizedBox(width: 6),
+              Text(a.label),
+            ],
+          ),
+        ),
+    ],
+  ),
+);
+
+/// La sesión de [a] venció en medio de una operación: ofrece iniciar sesión.
+/// Devuelve true si quedó conectada (para reintentar).
+Future<bool> askLogin(BuildContext context, Account a) async {
+  final go = await showDialog<bool>(
+    context: context,
+    builder: (c) => AlertDialog(
+      title: Row(
+        children: [
+          const Icon(Icons.lock_clock_outlined, size: 18, color: Gh.modified),
+          const SizedBox(width: 8),
+          Text('La sesión de ${a.label} venció', style: const TextStyle(fontSize: 14)),
+        ],
+      ),
+      content: Text(
+        a.provider == Provider.azure
+            ? 'Azure DevOps pide volver a iniciar sesión cada cierto tiempo. Se abrirá el login del Git Credential Manager '
+                  'y después se reintenta la operación.'
+            : 'GitHub rechazó la credencial. Inicia sesión otra vez y se reintenta la operación.',
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('Ahora no')),
+        FilledButton.icon(
+          onPressed: () => Navigator.pop(c, true),
+          icon: const Icon(Icons.login, size: 16),
+          label: const Text('Iniciar sesión'),
+        ),
+      ],
+    ),
+  );
+  if (go != true || !context.mounted) return false;
+  return (await loginWithFeedback(context, a)).state == SessionState.ok;
+}
