@@ -7,6 +7,7 @@ import 'accounts_ui.dart';
 import 'git.dart';
 import 'github.dart';
 import 'settings.dart';
+import 'system.dart';
 import 'theme.dart';
 
 enum CloneFilter { all, cloned, notCloned }
@@ -173,6 +174,17 @@ class _CloneBodyState extends State<_CloneBody> {
                 child: TextField(
                   controller: _dir,
                   style: const TextStyle(fontSize: Gh.fontSize),
+                  decoration: InputDecoration(
+                    suffixIcon: IconButton(
+                      tooltip: 'Elegir carpeta',
+                      iconSize: 16,
+                      icon: const Icon(Icons.folder_open_outlined),
+                      onPressed: () async {
+                        final d = await pickFolder(initial: _dir.text.isEmpty ? null : _dir.text);
+                        if (d != null) _dir.text = d;
+                      },
+                    ),
+                  ),
                 ),
               ),
             ],

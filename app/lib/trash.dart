@@ -4,8 +4,7 @@ import 'dart:io';
 /// Papelera propia de MickHub: antes de descartar cambios se guarda una copia del
 /// archivo, para poder restaurarlo. Igual en Windows y Linux (no usa la del
 /// sistema). Cada entrada es una carpeta con `meta.json` y `contenido`.
-// ponytail: guarda el archivo entero y no se vacía sola. Upgrade: borrar
-// entradas de más de N días al abrir la app.
+// ponytail: guarda el archivo entero; se vacía sola con [purge] al abrir la app.
 class TrashEntry {
   TrashEntry(this.dir, this.repo, this.path, this.deletedAt);
   final Directory dir;
@@ -54,4 +53,14 @@ class Trash {
   }
 
   Future<void> delete(TrashEntry e) => e.dir.delete(recursive: true);
+
+  /// Borra lo descartado hace más de [maxAge]. Devuelve cuántas entradas borró.
+  Future<int> purge(Duration maxAge, {DateTime? now}) async {
+    final limit = (now ?? DateTime.now()).subtract(maxAge);
+    final old = list().where((e) => e.deletedAt.isBefore(limit)).toList();
+    for (final e in old) {
+      await delete(e);
+    }
+    return old.length;
+  }
 }

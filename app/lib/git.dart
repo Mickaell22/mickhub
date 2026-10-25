@@ -158,13 +158,43 @@ List<Commit> parseLog(String out) => [
       }(),
 ];
 
-// ponytail: solo los últimos 300 commits; paginar cuando haga falta más.
-Future<List<Commit>> log(String repo) async {
+const _logFormat = '--format=%H%x1f%an%x1f%aI%x1f%s%x1f%ae%x1e';
+
+/// Commits por página del historial.
+const logPage = 200;
+
+/// Una página del historial de la rama actual, empezando en [skip].
+Future<List<Commit>> log(String repo, {int skip = 0}) async {
   try {
-    return parseLog(await git(['log', '-n', '300', '--format=%H%x1f%an%x1f%aI%x1f%s%x1f%ae%x1e'], cwd: repo));
+    return parseLog(await git(['log', '-n', '$logPage', '--skip', '$skip', _logFormat], cwd: repo));
   } on GitException {
     return []; // repo sin commits
   }
+}
+
+/// Busca en todo el historial de la rama: mensaje y autor (sin distinguir
+/// mayúsculas) y, si parece un hash, ese commit. Sin duplicados, más nuevos primero.
+Future<List<Commit>> searchLog(String repo, String query) async {
+  final q = query.trim();
+  if (q.isEmpty) return log(repo);
+  Future<List<Commit>> run(List<String> filter) async {
+    try {
+      return parseLog(await git(['log', '-n', '500', '-i', '--fixed-strings', ...filter, _logFormat], cwd: repo));
+    } on GitException {
+      return [];
+    }
+  }
+
+  final results = await Future.wait([
+    run(['--grep', q]),
+    run(['--author', q]),
+    if (RegExp(r'^[0-9a-fA-F]{4,40}$').hasMatch(q)) run(['-n', '1', '$q^{commit}', '--no-walk']),
+  ]);
+  final seen = <String>{};
+  return [
+    for (final c in results.expand((r) => r))
+      if (seen.add(c.hash)) c,
+  ]..sort((a, b) => b.date.compareTo(a.date));
 }
 
 /// Archivos tocados por un commit, con su estado.
@@ -332,7 +362,26 @@ Future<void> shelve(String repo, String name, List<String> paths) =>
     git(['stash', 'push', '--include-untracked', '-m', name, '--', ...paths], cwd: repo);
 
 /// Devuelve los archivos del apartado al working tree y lo borra de la lista.
-Future<void> unshelve(String repo, Shelf s) => git(['stash', 'pop', s.ref], cwd: repo);
+/// Si esos archivos tienen otros cambios ahora (p. ej. se apartaron solo unos
+/// bloques), `stash pop` se niega; entonces se aplica el apartado como parche
+/// sobre lo actual y, si entra limpio, se borra.
+Future<void> unshelve(String repo, Shelf s) async {
+  try {
+    await git(['stash', 'pop', s.ref], cwd: repo);
+  } on GitException catch (e) {
+    if (!e.message.contains('would be overwritten')) rethrow;
+    final patch = await git(['stash', 'show', '-p', '--include-untracked', s.ref], cwd: repo);
+    try {
+      await git(['apply', '-'], cwd: repo, stdin: patch);
+    } on GitException {
+      throw GitException([
+        'stash',
+        'pop',
+      ], 'El apartado choca con tus cambios actuales en los mismos archivos. Commitéalos o apártalos y vuelve a intentar.');
+    }
+    await dropShelf(repo, s);
+  }
+}
 
 Future<void> dropShelf(String repo, Shelf s) => git(['stash', 'drop', s.ref], cwd: repo);
 
@@ -366,3 +415,134 @@ Future<void> revertCommit(String repo, String hash, {List<String> identity = con
 /// Deshace el último commit sin perder sus cambios: vuelven a Cambios. Solo
 /// tiene sentido si todavía no se subió.
 Future<void> undoLastCommit(String repo) => git(['reset', '--soft', 'HEAD~1'], cwd: repo);
+
+// --- Conflictos -----------------------------------------------------------------
+
+enum MergeState { none, merge, rebase }
+
+/// Si el repo quedó a mitad de un merge o un rebase (típico de un pull con conflictos).
+Future<MergeState> mergeState(String repo) async {
+  Future<bool> exists(String gitPath) async {
+    final p = (await git(['rev-parse', '--git-path', gitPath], cwd: repo)).trim();
+    final f = File(p).isAbsolute ? p : '$repo/$p';
+    return FileSystemEntity.typeSync(f) != FileSystemEntityType.notFound;
+  }
+
+  if (await exists('MERGE_HEAD')) return MergeState.merge;
+  if (await exists('rebase-merge') || await exists('rebase-apply')) return MergeState.rebase;
+  return MergeState.none;
+}
+
+/// Resuelve un archivo en conflicto quedándose con una versión entera.
+/// [mine] = mi versión local. Ojo: en un rebase git invierte ours/theirs (ours
+/// es lo que viene del remoto), por eso depende de [state].
+Future<void> resolveWith(String repo, String path, {required bool mine, required MergeState state}) async {
+  final ours = state == MergeState.rebase ? !mine : mine;
+  await git(['checkout', ours ? '--ours' : '--theirs', '--', path], cwd: repo);
+  await git(['add', '--', path], cwd: repo);
+}
+
+/// Marca como resuelto un archivo que el usuario ya corrigió a mano.
+Future<void> markResolved(String repo, String path) => git(['add', '--', path], cwd: repo);
+
+Future<void> abortMerge(String repo, MergeState state) => git([state == MergeState.rebase ? 'rebase' : 'merge', '--abort'], cwd: repo);
+
+/// Termina el merge (commit con el mensaje que propone git) o sigue el rebase.
+Future<void> finishMerge(String repo, MergeState state, {List<String> identity = const []}) => state == MergeState.rebase
+    ? git([...identity, 'rebase', '--continue'], cwd: repo, env: {'GIT_EDITOR': 'true'})
+    : git([...identity, 'commit', '--no-edit'], cwd: repo, env: {'GIT_EDITOR': 'true'});
+
+/// Tramos de un archivo con marcas de conflicto, para pintarlo.
+enum ConflictPart { normal, marker, mine, base, theirs }
+
+List<ConflictPart> conflictParts(List<String> lines) {
+  var part = ConflictPart.normal;
+  return [
+    for (final l in lines)
+      if (l.startsWith('<<<<<<<'))
+        () {
+          part = ConflictPart.mine;
+          return ConflictPart.marker;
+        }()
+      else if (l.startsWith('|||||||') && part != ConflictPart.normal)
+        () {
+          part = ConflictPart.base;
+          return ConflictPart.marker;
+        }()
+      else if (l.startsWith('=======') && part != ConflictPart.normal)
+        () {
+          part = ConflictPart.theirs;
+          return ConflictPart.marker;
+        }()
+      else if (l.startsWith('>>>>>>>') && part != ConflictPart.normal)
+        () {
+          part = ConflictPart.normal;
+          return ConflictPart.marker;
+        }()
+      else
+        part,
+  ];
+}
+
+/// Crea un repo nuevo en [dir] con rama `main` y, si [readme], un README y el
+/// primer commit (así ya se puede publicar).
+Future<void> initRepo(String dir, String name, {bool readme = true, List<String> identity = const []}) async {
+  await Directory(dir).create(recursive: true);
+  await git(['init', '-q', '-b', 'main'], cwd: dir);
+  if (readme) {
+    await File('$dir/README.md').writeAsString('# $name\n');
+    await git(['add', 'README.md'], cwd: dir);
+    await git([...identity, 'commit', '-q', '-m', 'chore: commit inicial'], cwd: dir);
+  }
+}
+
+/// Conecta el repo a [url] como `origin` y sube la rama actual.
+Future<void> publishRepo(String repo, String url) async {
+  await git(['remote', 'add', 'origin', url], cwd: repo);
+  await git(['push', '-u', 'origin', 'HEAD'], cwd: repo);
+}
+
+// --- Apartar bloques sueltos -------------------------------------------------------
+
+/// Parche con solo los bloques (`@@`) elegidos de un diff de un archivo.
+/// [hunks] son índices de bloque desde 0. Null si no hay ninguno.
+String? selectHunks(String diff, Set<int> hunks) {
+  final lines = diff.split('\n');
+  final first = lines.indexWhere((l) => l.startsWith('@@'));
+  if (first < 0) return null;
+  final out = lines.sublist(0, first);
+  var idx = -1;
+  for (final l in lines.skip(first)) {
+    if (l.startsWith('@@')) idx++;
+    if (hunks.contains(idx)) out.add(l);
+  }
+  if (out.length == first) return null;
+  return '${out.join('\n').trimRight()}\n';
+}
+
+/// Aparta solo algunos bloques de un archivo versionado: el apartado guarda esos
+/// bloques y el archivo se queda con el resto de los cambios. Si algo falla a
+/// mitad, el archivo vuelve a como estaba.
+// ponytail: la granularidad es el bloque del diff con 3 líneas de contexto; dos
+// cambios a menos de ~6 líneas caen en el mismo bloque. Upgrade: elegir líneas.
+Future<void> shelveHunks(String repo, String path, String diff, Set<int> hunks, String name) async {
+  final patch = selectHunks(diff, hunks);
+  if (patch == null) return;
+  final file = File('$repo/$path');
+  final original = await file.readAsBytes();
+  final patchFile = File('${(await Directory.systemTemp.createTemp('mickhub_patch')).path}/bloques.patch');
+  await patchFile.writeAsString(patch);
+  try {
+    await git(['apply', '-R', patchFile.path], cwd: repo); // archivo = todo menos los bloques
+    final rest = await file.readAsBytes();
+    await git(['checkout', 'HEAD', '--', path], cwd: repo); // archivo = último commit
+    await git(['apply', patchFile.path], cwd: repo); // + solo los bloques
+    await shelve(repo, name, [path]); // se guardan y el archivo vuelve al commit
+    await file.writeAsBytes(rest); // y recupera el resto
+  } catch (_) {
+    await file.writeAsBytes(original);
+    rethrow;
+  } finally {
+    await patchFile.parent.delete(recursive: true);
+  }
+}

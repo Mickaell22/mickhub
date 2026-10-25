@@ -36,6 +36,9 @@ class Settings extends ChangeNotifier {
   /// deduce del remoto con [accountFor].
   Map<String, String> repoAccounts = {};
 
+  /// Días que se guarda lo descartado en la papelera antes de borrarse solo.
+  int trashDays = 30;
+
   /// Comando para "Abrir en el editor".
   String editorCommand = 'code';
 
@@ -66,6 +69,7 @@ class Settings extends ChangeNotifier {
     sidebarWidth = (j['sidebarWidth'] as num?)?.toDouble() ?? 250;
     groups = Map<String, String>.from(j['groups'] ?? {});
     editorCommand = j['editorCommand'] ?? 'code';
+    trashDays = (j['trashDays'] as num?)?.toInt() ?? 30;
     groupIcons = Map<String, String>.from(j['groupIcons'] ?? {});
     accounts = [for (final a in j['accounts'] ?? const []) Account.fromJson(a)];
     repoAccounts = Map<String, String>.from(j['repoAccounts'] ?? {});
@@ -83,6 +87,7 @@ class Settings extends ChangeNotifier {
         'sidebarWidth': sidebarWidth,
         'groups': groups,
         'editorCommand': editorCommand,
+        'trashDays': trashDays,
         'groupIcons': groupIcons,
         'accounts': [for (final a in accounts) a.toJson()],
         'repoAccounts': repoAccounts,

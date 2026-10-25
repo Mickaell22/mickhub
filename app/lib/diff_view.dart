@@ -48,9 +48,13 @@ Future<List<List<TextSpan>>?> highlightInIsolate(List<String> lines, String lang
 /// Diff unificado al estilo de GitHub Desktop: dos columnas de números de 50 px,
 /// fondo verde/rojo por línea y resaltado de sintaxis según la extensión de [path].
 class DiffView extends StatefulWidget {
-  const DiffView(this.diff, {super.key, required this.path});
+  const DiffView(this.diff, {super.key, required this.path, this.selectedHunks, this.onToggleHunk});
   final String diff;
   final String path;
+
+  /// Si se dan, cada bloque (`@@`) lleva una casilla para elegirlo (apartar bloques).
+  final Set<int>? selectedHunks;
+  final ValueChanged<int>? onToggleHunk;
 
   @override
   State<DiffView> createState() => _DiffViewState();
@@ -81,6 +85,7 @@ class _DiffViewState extends State<DiffView> {
   // lado viejo (contexto + borradas) y el nuevo (contexto + agregadas).
   int _gen = 0; // descarta resaltados viejos si el diff cambió mientras tanto
   bool _forceLarge = false;
+  List<int> _hunkOf = const []; // índice de bloque de cada línea
 
   /// Diffs de más de esto se ocultan hasta que el usuario los pida, como Desktop.
   static const _largeDiffBytes = 1024 * 1024;
@@ -96,6 +101,8 @@ class _DiffViewState extends State<DiffView> {
     }
     final lines = _lines = parseDiff(widget.diff);
     if (lines == null) return;
+    var h = -1;
+    _hunkOf = [for (final l in lines) l.kind == LineKind.hunk ? ++h : h];
     final code = [
       for (var i = 0; i < lines.length; i++)
         if (lines[i].kind != LineKind.hunk) i,
@@ -144,11 +151,15 @@ class _DiffViewState extends State<DiffView> {
     if (lines == null) return const _Centered('Este archivo es binario y no se puede mostrar.');
     if (lines.isEmpty) return const _Centered('Sin cambios de contenido (solo permisos o renombre).');
     return SelectionArea(
-      child: ListView.builder(itemCount: lines.length, itemExtent: 18, itemBuilder: (_, i) => _line(lines[i], _spans[i])),
+      child: ListView.builder(
+        itemCount: lines.length,
+        itemExtent: 18,
+        itemBuilder: (_, i) => _line(lines[i], _spans[i], hunk: _hunkOf[i]),
+      ),
     );
   }
 
-  Widget _line(DiffLine l, List<TextSpan>? spans) {
+  Widget _line(DiffLine l, List<TextSpan>? spans, {int? hunk}) {
     final (bg, gutter) = switch (l.kind) {
       LineKind.add => (Gh.diffAdd, Gh.diffAdd),
       LineKind.delete => (Gh.diffDelete, Gh.diffDelete),
@@ -171,8 +182,20 @@ class _DiffViewState extends State<DiffView> {
       color: bg,
       child: Row(
         children: [
-          no(l.oldNo),
-          no(l.newNo),
+          if (l.kind == LineKind.hunk && widget.onToggleHunk != null && hunk != null)
+            Container(
+              width: 100,
+              color: gutter,
+              alignment: Alignment.centerLeft,
+              child: Transform.scale(
+                scale: 0.7,
+                child: Checkbox(value: widget.selectedHunks?.contains(hunk) ?? false, onChanged: (_) => widget.onToggleHunk!(hunk)),
+              ),
+            )
+          else ...[
+            no(l.oldNo),
+            no(l.newNo),
+          ],
           Expanded(
             child: Text.rich(
               TextSpan(

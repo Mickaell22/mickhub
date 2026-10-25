@@ -276,18 +276,94 @@ Future<List<Repo>> azureRepos(String org) async {
   throw const HttpException('La sesión de Azure DevOps venció');
 }
 
-Future<(int, String)> _get(Uri url, Map<String, String> headers) async {
+Future<(int, String)> _get(Uri url, Map<String, String> headers) => _request('GET', url, headers);
+
+/// Pedido HTTP con cuerpo JSON opcional. Un redirect cuenta como 401: Azure
+/// manda al login en vez de responder "no autorizado".
+Future<(int, String)> _request(String method, Uri url, Map<String, String> headers, {Object? json}) async {
   final client = HttpClient()..connectionTimeout = const Duration(seconds: 10);
   try {
-    final req = await client.getUrl(url);
+    final req = await client.openUrl(method, url);
     headers.forEach(req.headers.set);
     req.headers.set('User-Agent', 'MickHub');
-    req.followRedirects = false; // Azure redirige al login en vez de dar 401
+    req.followRedirects = false;
+    if (json != null) {
+      req.headers.contentType = ContentType.json;
+      req.write(jsonEncode(json));
+    }
     final res = await req.close();
     final body = await res.transform(utf8.decoder).join();
     return (res.isRedirect ? 401 : res.statusCode, body);
   } finally {
     client.close();
+  }
+}
+
+// --- Publicar un repo nuevo ------------------------------------------------------
+
+/// Proyectos de una organización de Azure DevOps (un repo de Azure vive en uno).
+Future<List<String>> azureProjects(String org) async {
+  final (status, body) = await _azure(org, 'GET', '_apis/projects?api-version=7.1');
+  if (status != 200) throw HttpException('Azure DevOps respondió $status');
+  return [for (final p in (jsonDecode(body) as Map)['value'] as List) p['name'] as String]..sort();
+}
+
+/// Crea el repo vacío en el destino y devuelve su URL para clonar/pushear.
+/// GitHub: bajo el usuario dueño de la credencial. Azure: en [project].
+Future<String> createRemoteRepo(Target t, String name, {bool private = true, String? project}) async {
+  if (t.provider == Provider.github) {
+    final cred = await credentialFor(t);
+    if (cred == null) throw HttpException('${t.label} no tiene sesión iniciada');
+    final (status, body) = await _request(
+      'POST',
+      Uri.parse('https://api.github.com/user/repos'),
+      {'Authorization': 'Bearer ${cred['password']}', 'Accept': 'application/vnd.github+json'},
+      json: {'name': name, 'private': private},
+    );
+    if (status != 201) throw HttpException('GitHub no creó el repo ($status): ${_apiMessage(body)}');
+    return (jsonDecode(body) as Map)['clone_url'];
+  }
+  final projects = await _azureProjectIds(t.name);
+  final id = projects[project];
+  if (id == null) throw HttpException('No existe el proyecto "$project" en ${t.name}');
+  final (status, body) = await _azure(
+    t.name,
+    'POST',
+    '_apis/git/repositories?api-version=7.1',
+    json: {
+      'name': name,
+      'project': {'id': id},
+    },
+  );
+  if (status != 201 && status != 200) throw HttpException('Azure DevOps no creó el repo ($status): ${_apiMessage(body)}');
+  return (jsonDecode(body) as Map)['remoteUrl'];
+}
+
+Future<Map<String, String>> _azureProjectIds(String org) async {
+  final (status, body) = await _azure(org, 'GET', '_apis/projects?api-version=7.1');
+  if (status != 200) throw HttpException('Azure DevOps respondió $status');
+  return {for (final p in (jsonDecode(body) as Map)['value'] as List) p['name'] as String: p['id'] as String};
+}
+
+/// Pedido a la API de una organización probando Bearer y Basic (ver [azureAuthHeaders]).
+Future<(int, String)> _azure(String org, String method, String path, {Object? json}) async {
+  final cred = await credentialFor(Target(Provider.azure, org));
+  if (cred == null) throw HttpException('La organización $org no tiene sesión iniciada');
+  final url = Uri.parse('https://dev.azure.com/${Uri.encodeComponent(org)}/$path');
+  var last = (401, '');
+  for (final auth in azureAuthHeaders(cred['password']!)) {
+    last = await _request(method, url, {'Authorization': auth}, json: json);
+    if (last.$1 != 401 && last.$1 != 203) return last;
+  }
+  return last;
+}
+
+String _apiMessage(String body) {
+  try {
+    final j = jsonDecode(body);
+    return (j is Map ? (j['message'] ?? j['errors']?.toString()) : null)?.toString() ?? body;
+  } catch (_) {
+    return body;
   }
 }
 

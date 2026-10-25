@@ -1,3 +1,6 @@
+import 'dart:io';
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -132,6 +135,7 @@ class ChangesPane extends StatefulWidget {
     required this.onOpenFolder,
     required this.onOpenEditor,
     required this.trash,
+    required this.editorCommand,
     this.account,
   });
   final String repo;
@@ -142,6 +146,7 @@ class ChangesPane extends StatefulWidget {
   final ValueChanged<String> onOpenFolder;
   final VoidCallback onOpenEditor;
   final Trash trash;
+  final String editorCommand;
 
   /// Cuenta del repo: si tiene nombre y email, los commits se firman con ellos.
   final Account? account;
@@ -154,6 +159,8 @@ class _ChangesPaneState extends State<ChangesPane> {
   List<FileChange> _files = [];
   List<Protected> _protected = [];
   List<Shelf> _shelves = [];
+  MergeState _merge = MergeState.none;
+  final _hunks = <int>{}; // bloques marcados para apartar en el archivo elegido
   String? _gitIdentity; // la de git (repo o global), si el repo no tiene cuenta
   bool _showShelves = true;
   bool _showProtected = true;
@@ -189,8 +196,10 @@ class _ChangesPaneState extends State<ChangesPane> {
     final locked = await protectedFiles(widget.repo);
     final shelved = await shelves(widget.repo);
     final identity = await gitIdentity(widget.repo);
+    final merge = await mergeState(widget.repo);
     if (!mounted) return;
     setState(() {
+      _merge = merge;
       _files = files;
       _protected = locked;
       _shelves = shelved;
@@ -216,6 +225,199 @@ class _ChangesPaneState extends State<ChangesPane> {
   }
 
   void _snack(String msg) => ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+
+  /// Barra sobre el diff para apartar solo algunos bloques del archivo.
+  Widget _hunkBar(FileChange f, String diff) => Container(
+    height: Gh.rowHeight + 6,
+    padding: const EdgeInsets.symmetric(horizontal: Gh.sp),
+    decoration: const BoxDecoration(
+      color: Gh.box,
+      border: Border(bottom: Gh.divider),
+    ),
+    child: Row(
+      children: [
+        const Icon(Icons.inventory_2_outlined, size: 14, color: Gh.textSecondary),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(
+            _hunks.isEmpty
+                ? 'Marca bloques para apartar solo esa parte del archivo'
+                : '${_hunks.length} ${_hunks.length == 1 ? 'bloque marcado' : 'bloques marcados'}',
+            style: const TextStyle(color: Gh.textSecondary),
+          ),
+        ),
+        if (_hunks.isNotEmpty)
+          TextButton.icon(
+            onPressed: () => _shelveHunks(f, diff),
+            icon: const Icon(Icons.inventory_2_outlined, size: 14),
+            label: const Text('Apartar bloques…'),
+          ),
+      ],
+    ),
+  );
+
+  Future<void> _shelveHunks(FileChange f, String diff) async {
+    final ctrl = TextEditingController();
+    final name = await showDialog<String>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: Text(
+          'Apartar ${_hunks.length} ${_hunks.length == 1 ? 'bloque' : 'bloques'} de ${f.path}',
+          style: const TextStyle(fontSize: 14),
+        ),
+        content: SizedBox(
+          width: 420,
+          child: TextField(
+            controller: ctrl,
+            autofocus: true,
+            decoration: const InputDecoration(hintText: 'Nombre (p. ej. Implementación de reportes)'),
+            onSubmitted: (v) => Navigator.pop(c, v.trim().isEmpty ? null : v.trim()),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(c), child: const Text('Cancelar')),
+          FilledButton(onPressed: () => Navigator.pop(c, ctrl.text.trim().isEmpty ? null : ctrl.text.trim()), child: const Text('Apartar')),
+        ],
+      ),
+    );
+    ctrl.dispose();
+    if (name == null) return;
+    final chosen = {..._hunks};
+    _hunks.clear();
+    await _guard(() async {
+      await widget.trash.save(widget.repo, f.path); // copia de seguridad por si acaso
+      await shelveHunks(widget.repo, f.path, diff, chosen, name);
+    });
+  }
+
+  int get _conflicts => _files.where((f) => f.status == FileStatus.conflicted).length;
+
+  /// Aviso de merge/rebase a medias: cuántos conflictos quedan, abortar o terminar.
+  Widget _mergeBanner() {
+    final left = _conflicts;
+    final what = _merge == MergeState.rebase ? 'rebase' : 'merge';
+    return Container(
+      padding: const EdgeInsets.all(Gh.sp),
+      decoration: BoxDecoration(
+        color: Gh.conflicted.withValues(alpha: 0.15),
+        border: const Border(bottom: Gh.divider),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.warning_amber, size: 16, color: Gh.conflicted),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  left == 0 ? 'Conflictos resueltos. Termina el $what.' : '$left ${left == 1 ? 'archivo' : 'archivos'} en conflicto',
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => _guard(() => abortMerge(widget.repo, _merge).then((_) => widget.onCommitted())),
+                  child: Text('Abortar $what'),
+                ),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: FilledButton(
+                  onPressed: left > 0
+                      ? null
+                      : () => _guard(() async {
+                          await finishMerge(widget.repo, _merge, identity: widget.account?.identityArgs ?? const []);
+                          widget.onCommitted();
+                        }),
+                  child: const Text('Terminar'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Archivo en conflicto: el contenido con las marcas, mi parte y la del remoto
+  /// en colores, y las formas de resolverlo.
+  Widget _conflictView(FileChange f) {
+    final file = File('${widget.repo}/${f.path}');
+    final lines = file.existsSync() ? file.readAsLinesSync() : <String>[];
+    final parts = conflictParts(lines);
+    final rebase = _merge == MergeState.rebase;
+    Color? bg(ConflictPart p) => switch (p) {
+      ConflictPart.marker => Gh.boxAlt,
+      ConflictPart.mine => Gh.diffAdd,
+      ConflictPart.theirs => const Color(0xff0b2a4a),
+      ConflictPart.base => Gh.box,
+      ConflictPart.normal => null,
+    };
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        fileHeader(f),
+        Container(
+          padding: const EdgeInsets.all(Gh.sp),
+          decoration: const BoxDecoration(border: Border(bottom: Gh.divider)),
+          child: Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              const Text('Verde: tu versión · Azul: la del remoto.  ', style: TextStyle(color: Gh.textSecondary)),
+              OutlinedButton.icon(
+                onPressed: () => _guard(() => resolveWith(widget.repo, f.path, mine: true, state: _merge)),
+                icon: const Icon(Icons.person_outline, size: 16),
+                label: const Text('Usar mi versión'),
+              ),
+              OutlinedButton.icon(
+                onPressed: () => _guard(() => resolveWith(widget.repo, f.path, mine: false, state: _merge)),
+                icon: const Icon(Icons.cloud_download_outlined, size: 16),
+                label: const Text('Usar la del remoto'),
+              ),
+              OutlinedButton.icon(
+                onPressed: () => openInEditor(widget.editorCommand, file.path),
+                icon: const Icon(Icons.code, size: 16),
+                label: const Text('Corregir en el editor'),
+              ),
+              FilledButton.icon(
+                onPressed: parts.contains(ConflictPart.marker) ? null : () => _guard(() => markResolved(widget.repo, f.path)),
+                icon: const Icon(Icons.check, size: 16),
+                label: const Text('Marcar como resuelto'),
+              ),
+              if (rebase)
+                const Text('(en un rebase, "tu versión" es tu commit que se está reaplicando)', style: TextStyle(color: Gh.textSecondary)),
+            ],
+          ),
+        ),
+        Expanded(
+          child: SelectionArea(
+            child: ListView.builder(
+              itemCount: lines.length,
+              itemExtent: 18,
+              itemBuilder: (_, i) => Container(
+                color: bg(parts[i]),
+                padding: const EdgeInsets.only(left: Gh.sp),
+                child: Text(
+                  lines[i],
+                  softWrap: false,
+                  overflow: TextOverflow.clip,
+                  style: Gh.mono.copyWith(color: parts[i] == ConflictPart.marker ? Gh.conflicted : Gh.text),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
 
   Future<void> _fileMenu(FileChange f, Offset at) async {
     final dir = f.path.contains('/') ? '${widget.repo}/${f.path.substring(0, f.path.lastIndexOf('/'))}' : widget.repo;
@@ -518,6 +720,7 @@ class _ChangesPaneState extends State<ChangesPane> {
     final sidebar = Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        if (_merge != MergeState.none) _mergeBanner(),
         Container(
           height: Gh.rowHeight,
           padding: const EdgeInsets.symmetric(horizontal: Gh.sp / 2),
@@ -548,7 +751,10 @@ class _ChangesPaneState extends State<ChangesPane> {
               return GhRow(
                 selected: f.path == _selected,
                 onTap: () {
-                  setState(() => _selected = f.path);
+                  setState(() {
+                    _selected = f.path;
+                    _hunks.clear();
+                  });
                   _loadDiff();
                 },
                 onSecondary: (at) => _fileMenu(f, at),
@@ -594,11 +800,22 @@ class _ChangesPaneState extends State<ChangesPane> {
         ),
       ]),
       (_, null, _) => emptyState('Selecciona un archivo', 'Elige un archivo de la lista para ver sus cambios.'),
+      (_, final f?, _) when f.status == FileStatus.conflicted => _conflictView(f),
       (_, final f?, final d?) => Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           fileHeader(f),
-          Expanded(child: DiffView(d, path: f.path)),
+          if (f.status == FileStatus.modified && RegExp('^@@', multiLine: true).allMatches(d).length > 1) _hunkBar(f, d),
+          Expanded(
+            child: DiffView(
+              d,
+              path: f.path,
+              selectedHunks: f.status == FileStatus.modified ? _hunks : null,
+              onToggleHunk: f.status == FileStatus.modified
+                  ? (h) => setState(() => _hunks.contains(h) ? _hunks.remove(h) : _hunks.add(h))
+                  : null,
+            ),
+          ),
         ],
       ),
       _ => const SizedBox(),
@@ -640,6 +857,13 @@ class _ChangesPaneState extends State<ChangesPane> {
 
   Widget _commitBox(int checked) {
     final can = checked > 0 && _summary.text.trim().isNotEmpty && !_committing;
+    return CallbackShortcuts(
+      bindings: {const SingleActivator(LogicalKeyboardKey.enter, control: true): () => can ? _commit() : null},
+      child: _commitBoxBody(checked, can),
+    );
+  }
+
+  Widget _commitBoxBody(int checked, bool can) {
     return Container(
       padding: const EdgeInsets.all(Gh.sp),
       decoration: const BoxDecoration(
@@ -722,8 +946,11 @@ class HistoryPane extends StatefulWidget {
 }
 
 class _HistoryPaneState extends State<HistoryPane> {
-  List<Commit> _commits = [];
+  List<Commit> _commits = []; // páginas cargadas de la rama, en orden
+  bool _hasMore = false, _loadingMore = false;
   String _query = '';
+  List<Commit>? _results; // búsqueda en todo el historial; null = sin búsqueda
+  Timer? _searchDebounce;
   Commit? _selected;
   List<FileChange> _files = [];
   FileChange? _file;
@@ -741,12 +968,50 @@ class _HistoryPaneState extends State<HistoryPane> {
     if (old.tick != widget.tick) _load();
   }
 
+  @override
+  void dispose() {
+    _searchDebounce?.cancel();
+    super.dispose();
+  }
+
   Future<void> _load() async {
     final commits = await log(widget.repo);
     if (!mounted) return;
-    setState(() => _commits = commits);
+    setState(() {
+      _commits = commits;
+      _hasMore = commits.length == logPage;
+    });
+    if (_query.trim().isNotEmpty) _search(_query);
     final keep = commits.where((c) => c.hash == _selected?.hash).firstOrNull;
     if (commits.isNotEmpty) _select(keep ?? commits.first);
+  }
+
+  /// Siguiente página, al llegar al final de la lista.
+  Future<void> _loadMore() async {
+    if (_loadingMore || !_hasMore) return;
+    _loadingMore = true;
+    final more = await log(widget.repo, skip: _commits.length);
+    if (!mounted) return;
+    setState(() {
+      _commits = [..._commits, ...more];
+      _hasMore = more.length == logPage;
+      _loadingMore = false;
+    });
+  }
+
+  void _onQuery(String q) {
+    setState(() => _query = q);
+    _searchDebounce?.cancel();
+    if (q.trim().isEmpty) {
+      setState(() => _results = null);
+      return;
+    }
+    _searchDebounce = Timer(const Duration(milliseconds: 300), () => _search(q));
+  }
+
+  Future<void> _search(String q) async {
+    final r = await searchLog(widget.repo, q);
+    if (mounted && q == _query) setState(() => _results = r);
   }
 
   Future<void> _select(Commit c) async {
@@ -771,7 +1036,7 @@ class _HistoryPaneState extends State<HistoryPane> {
   /// todavía no se subió.
   Future<void> _commitMenu(Commit c, Offset at) async {
     final isLast = _commits.isNotEmpty && _commits.first.hash == c.hash;
-    final unpushed = _commits.indexOf(c) < widget.ahead;
+    final unpushed = _commits.take(widget.ahead).any((x) => x.hash == c.hash);
     final web = commitWebUrl(widget.originUrl, c.hash);
     final action = await showMenu<String>(
       context: context,
@@ -821,15 +1086,23 @@ class _HistoryPaneState extends State<HistoryPane> {
 
   @override
   Widget build(BuildContext context) {
-    final shown = _commits.where((c) => matchesCommit(c, _query)).toList();
+    final searching = _query.trim().isNotEmpty;
+    final shown = searching ? (_results ?? const <Commit>[]) : _commits;
+    // Los primeros `ahead` commits de la rama son los que todavía no se subieron.
+    final unpushed = {for (final c in _commits.take(widget.ahead)) c.hash};
     final list = _commits.isEmpty
         ? emptyState('Sin commits', 'Esta rama todavía no tiene commits.')
         : shown.isEmpty
-        ? emptyState('Sin resultados', 'Ningún commit coincide con "$_query".')
+        ? emptyState(searching && _results == null ? 'Buscando…' : 'Sin resultados', 'Ningún commit coincide con "$_query".')
         : ListView.builder(
-            itemCount: shown.length,
+            itemCount: shown.length + (!searching && _hasMore ? 1 : 0),
             itemExtent: Gh.commitRowHeight,
             itemBuilder: (_, i) {
+              if (i == shown.length) {
+                // Fila final: al hacerse visible pide la página siguiente.
+                WidgetsBinding.instance.addPostFrameCallback((_) => _loadMore());
+                return const Center(child: SizedBox.square(dimension: 16, child: CircularProgressIndicator(strokeWidth: 2)));
+              }
               final c = shown[i];
               return GhRow(
                 height: Gh.commitRowHeight,
@@ -859,7 +1132,7 @@ class _HistoryPaneState extends State<HistoryPane> {
                         ],
                       ),
                     ),
-                    if (_commits.indexOf(c) < widget.ahead)
+                    if (unpushed.contains(c.hash))
                       const Tooltip(
                         message: 'Sin subir',
                         child: Icon(Icons.arrow_upward, size: 14, color: Gh.textSecondary),
@@ -878,7 +1151,7 @@ class _HistoryPaneState extends State<HistoryPane> {
           child: TextField(
             style: const TextStyle(fontSize: Gh.fontSize),
             decoration: const InputDecoration(hintText: 'Buscar por mensaje, autor o hash', prefixIcon: Icon(Icons.search, size: 16)),
-            onChanged: (v) => setState(() => _query = v),
+            onChanged: _onQuery,
           ),
         ),
         const Divider(height: 1, color: Gh.border),

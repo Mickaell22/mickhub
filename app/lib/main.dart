@@ -9,6 +9,7 @@ import 'accounts_ui.dart';
 import 'clone_dialog.dart';
 import 'git.dart';
 import 'panes.dart';
+import 'repo_dialogs.dart';
 import 'settings.dart';
 import 'system.dart';
 import 'theme.dart';
@@ -71,6 +72,7 @@ class _ShellState extends State<Shell> {
       },
     );
     _checkSessions();
+    s.trash.purge(Duration(days: s.trashDays)); // la papelera se vacía sola
     // Si alguien edita el JSON de ajustes desde fuera (Claude Code clonando o
     // agrupando repos), se recarga la lista sin reiniciar la app.
     _settingsWatch = s.watch(() {
@@ -94,15 +96,18 @@ class _ShellState extends State<Shell> {
   Future<void> _loadRepos({bool reopen = true}) async {
     final repos = s.localRepos();
     setState(() => _repos = repos);
-    final current = repos.contains(s.currentRepo) ? s.currentRepo : (repos.isEmpty ? null : repos.first);
-    if (current != null && (reopen || current != _repo)) await _open(current);
+    // Remotos primero: de ellos dependen la cuenta del repo y el botón de publicar.
     final urls = await Future.wait(repos.map(originUrl));
+    _remotes.clear();
+    _origins.clear();
     for (var i = 0; i < repos.length; i++) {
       if (urls[i] != null) {
         _remotes[repos[i]] = remoteKey(urls[i]!);
         _origins[repos[i]] = urls[i]!;
       }
     }
+    final current = repos.contains(s.currentRepo) ? s.currentRepo : (repos.isEmpty ? null : repos.first);
+    if (current != null && (reopen || current != _repo)) await _open(current);
   }
 
   Future<void> _open(String repo) async {
@@ -140,38 +145,44 @@ class _ShellState extends State<Shell> {
     await _open(path);
   }
 
+  Future<void> _newRepo() async {
+    setState(() => _foldout = Foldout.none);
+    try {
+      final path = await showNewRepoDialog(context, s);
+      if (path == null) return;
+      final inReposDir =
+          s.reposDir != null && File(path).parent.path == Directory(s.reposDir!).absolute.path.replaceFirst(RegExp(r'[\\/]$'), '');
+      if (!inReposDir) await s.update((x) => x.extraRepos = [...x.extraRepos, path]);
+      await _loadRepos();
+      await _open(path);
+    } catch (e) {
+      _snack(e is GitException ? e.message : '$e');
+    }
+  }
+
+  Future<void> _publish() async {
+    final repo = _repo!;
+    final url = await showPublishDialog(context, s, repo);
+    if (url == null) return;
+    _origins[repo] = url;
+    _remotes[repo] = remoteKey(url);
+    _snack('Publicado en $url');
+    await _refresh();
+  }
+
   Future<void> _addLocal() async {
     setState(() => _foldout = Foldout.none);
-    final ctrl = TextEditingController();
-    final path = await showDialog<String>(
-      context: context,
-      builder: (c) => AlertDialog(
-        backgroundColor: Gh.bg,
-        title: const Text('Agregar repositorio local', style: TextStyle(fontSize: 14)),
-        content: SizedBox(
-          width: 420,
-          child: TextField(
-            controller: ctrl,
-            autofocus: true,
-            decoration: const InputDecoration(hintText: 'Ruta de la carpeta del repositorio'),
-            onSubmitted: (v) => Navigator.pop(c, v),
-          ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(c), child: const Text('Cancelar')),
-          FilledButton(onPressed: () => Navigator.pop(c, ctrl.text), child: const Text('Agregar')),
-        ],
-      ),
-    );
-    ctrl.dispose();
-    if (path == null || path.trim().isEmpty) return;
+    final path = await pickFolder(initial: s.reposDir, confirm: 'Agregar');
+    if (path == null) return;
     try {
-      final root = (await git(['rev-parse', '--show-toplevel'], cwd: path.trim())).trim();
-      if (!s.extraRepos.contains(root)) await s.update((x) => x.extraRepos = [...x.extraRepos, root]);
+      final root = (await git(['rev-parse', '--show-toplevel'], cwd: path)).trim();
+      if (!s.extraRepos.contains(root) && !s.localRepos().contains(root)) {
+        await s.update((x) => x.extraRepos = [...x.extraRepos, root]);
+      }
       await _loadRepos();
       await _open(root);
     } catch (_) {
-      _snack('Esa carpeta no es un repositorio de git.');
+      _snack('Esa carpeta no es un repositorio de git. Para crear uno nuevo usa "Nuevo repositorio".');
     }
   }
 
@@ -180,7 +191,10 @@ class _ShellState extends State<Shell> {
     if (repo == null || b == null) return;
     setState(() => _syncing = true);
     try {
-      if (b.upstream == null) {
+      if (_origins[repo] == null) {
+        if (mounted) setState(() => _syncing = false);
+        return _publish();
+      } else if (b.upstream == null) {
         await git(['push', '-u', 'origin', 'HEAD'], cwd: repo);
       } else if (b.behind > 0) {
         await git([...?_account?.identityArgs, 'pull'], cwd: repo); // un pull puede crear un merge
@@ -196,6 +210,9 @@ class _ShellState extends State<Shell> {
       final account = _account;
       if (hit.isNotEmpty) {
         await _protectedConflict(hit);
+      } else if (e.message.contains('CONFLICT') || e.message.contains('Automatic merge failed')) {
+        setState(() => _tab = RepoTab.changes);
+        _snack('El pull trajo conflictos. Resuélvelos en Cambios (aviso naranja arriba) o aborta el merge.');
       } else if (isAuthError(e.message) && account != null && mounted) {
         // Típico de Azure: la sesión vence cada cierto tiempo. Login y reintento.
         if (await askLogin(context, account, targetOf(_origins[repo]))) {
@@ -257,8 +274,94 @@ class _ShellState extends State<Shell> {
     await _refresh();
   }
 
+  /// Atajos de teclado (los de GitHub Desktop donde hay uno equivalente).
+  /// Ctrl+Enter para hacer commit vive en la caja de commit.
+  static const shortcutHelp = [
+    ('Ctrl+T', 'Elegir repositorio'),
+    ('Ctrl+B', 'Elegir rama'),
+    ('Ctrl+Shift+N', 'Nueva rama local'),
+    ('Ctrl+1 / Ctrl+2', 'Ir a Cambios / Historial'),
+    ('Ctrl+Shift+P', 'Fetch, pull o push (lo que diga el botón)'),
+    ('Ctrl+Shift+F', 'Abrir la carpeta del repo'),
+    ('Ctrl+Shift+A', 'Abrir el repo en el editor'),
+    ('Ctrl+Enter', 'Hacer commit'),
+    ('F5', 'Refrescar'),
+    ('Esc', 'Cerrar el desplegable'),
+    ('Ctrl+/', 'Ver estos atajos'),
+  ];
+
+  Map<ShortcutActivator, VoidCallback> get _shortcuts {
+    void toggle(Foldout f) => setState(() => _foldout = _foldout == f ? Foldout.none : f);
+    final repo = _repo;
+    return {
+      const SingleActivator(LogicalKeyboardKey.keyT, control: true): () => toggle(Foldout.repos),
+      if (repo != null) ...{
+        const SingleActivator(LogicalKeyboardKey.keyB, control: true): () => toggle(Foldout.branches),
+        const SingleActivator(LogicalKeyboardKey.keyN, control: true, shift: true): _newBranch,
+        const SingleActivator(LogicalKeyboardKey.digit1, control: true): () => setState(() => _tab = RepoTab.changes),
+        const SingleActivator(LogicalKeyboardKey.digit2, control: true): () => setState(() => _tab = RepoTab.history),
+        const SingleActivator(LogicalKeyboardKey.keyP, control: true, shift: true): () => _syncing ? null : _sync(),
+        const SingleActivator(LogicalKeyboardKey.keyF, control: true, shift: true): () => _openFolder(repo),
+        const SingleActivator(LogicalKeyboardKey.keyA, control: true, shift: true): () => _openEditor(repo),
+        const SingleActivator(LogicalKeyboardKey.f5): _refresh,
+      },
+      const SingleActivator(LogicalKeyboardKey.escape): () => setState(() => _foldout = Foldout.none),
+      const SingleActivator(LogicalKeyboardKey.slash, control: true): _showShortcuts,
+    };
+  }
+
+  void _showShortcuts() => showDialog<void>(
+    context: context,
+    builder: (c) => AlertDialog(
+      title: const Row(
+        children: [
+          Icon(Icons.keyboard_outlined, size: 18),
+          SizedBox(width: 8),
+          Text('Atajos de teclado', style: TextStyle(fontSize: 14)),
+        ],
+      ),
+      content: SizedBox(
+        width: 380,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final (keys, what) in shortcutHelp)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 3),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 130,
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: Gh.box,
+                        borderRadius: BorderRadius.circular(4),
+                        border: Border.all(color: Gh.border),
+                      ),
+                      child: Text(keys, style: Gh.mono.copyWith(fontSize: Gh.fontSizeSm, height: 1.2)),
+                    ),
+                    const SizedBox(width: Gh.sp),
+                    Expanded(child: Text(what)),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ),
+      actions: [FilledButton(onPressed: () => Navigator.pop(c), child: const Text('Cerrar'))],
+    ),
+  );
+
+  @override
   @override
   Widget build(BuildContext context) {
+    return CallbackShortcuts(
+      bindings: _shortcuts,
+      child: Focus(autofocus: true, child: _scaffold()),
+    );
+  }
+
+  Widget _scaffold() {
     return Scaffold(
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -293,11 +396,21 @@ class _ShellState extends State<Shell> {
 
   Widget _toolbar() {
     final b = _branch;
+    final noRemote = _repo != null && b != null && _origins[_repo] == null;
     final (syncTitle, syncLabel, syncIcon) = switch (b) {
       null => ('', 'Fetch origin', Icons.sync),
-      BranchState(upstream: null) => ('Subir esta rama a GitHub', 'Publicar rama', Icons.cloud_upload_outlined),
-      BranchState(behind: > 0) => ('${b.behind} commits para traer', 'Pull origin', Icons.arrow_downward),
-      BranchState(ahead: > 0) => ('${b.ahead} commits para subir', 'Push origin', Icons.arrow_upward),
+      _ when noRemote => ('Crearlo en GitHub o Azure y subirlo', 'Publicar repositorio', Icons.cloud_upload_outlined),
+      BranchState(upstream: null) => ('Subir esta rama al remoto', 'Publicar rama', Icons.cloud_upload_outlined),
+      BranchState(behind: > 0) => (
+        b.behind == 1 ? '1 commit para traer' : '${b.behind} commits para traer',
+        'Pull origin',
+        Icons.arrow_downward,
+      ),
+      BranchState(ahead: > 0) => (
+        b.ahead == 1 ? '1 commit para subir' : '${b.ahead} commits para subir',
+        'Push origin',
+        Icons.arrow_upward,
+      ),
       _ => (
         _lastFetch[_repo] == null ? 'Sin fetch en esta sesión' : 'Último fetch ${timeAgo(_lastFetch[_repo]!)}',
         'Fetch origin',
@@ -339,6 +452,12 @@ class _ShellState extends State<Shell> {
             onTap: _repo == null || b == null || _syncing ? null : _sync,
           ),
           const Spacer(),
+          IconButton(
+            tooltip: 'Atajos de teclado (Ctrl+/)',
+            iconSize: 18,
+            onPressed: _showShortcuts,
+            icon: const Icon(Icons.keyboard_outlined),
+          ),
           IconButton(
             tooltip: _sessionProblem ? 'Cuentas: hay una sesión vencida' : 'Cuentas',
             iconSize: 18,
@@ -607,6 +726,7 @@ class _ShellState extends State<Shell> {
       position: RelativeRect.fromLTRB(at.dx, at.dy, at.dx, at.dy),
       items: [
         menuItem('clone', Icons.download, 'Clonar repositorio…'),
+        menuItem('new', Icons.add_box_outlined, 'Nuevo repositorio…'),
         menuItem('local', Icons.create_new_folder_outlined, 'Agregar repositorio local…'),
         const PopupMenuDivider(),
         menuItem('group', Icons.workspaces_outline, 'Nuevo grupo…'),
@@ -615,6 +735,8 @@ class _ShellState extends State<Shell> {
     switch (action) {
       case 'clone':
         await _clone();
+      case 'new':
+        await _newRepo();
       case 'local':
         await _addLocal();
       case 'group':
@@ -852,6 +974,7 @@ class _ShellState extends State<Shell> {
             onOpenFolder: _openFolder,
             onOpenEditor: () => _openEditor(repo),
             trash: s.trash,
+            editorCommand: s.editorCommand,
             account: _account,
           )
         : HistoryPane(
