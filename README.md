@@ -7,4 +7,4 @@ Cliente de git de escritorio a mi medida, para Windows y Linux, con vista de sol
 - Historial con resúmenes por IA de lo que hizo cada commit y cada rama, buscable por hash, autor o texto.
 - Temas, temporadas y personajes animados en los espacios vacíos.
 
-Estado: esqueleto inicial, sin funcionalidad todavía. Detalles en [CLAUDE.md](./CLAUDE.md).
+Estado: en desarrollo. Ya tiene la vista principal al estilo de GitHub Desktop (cambios, commit, historial, diff con resaltado, fetch/pull/push) y el clonado desde la lista de repos de GitHub. Detalles en [CLAUDE.md](./CLAUDE.md).

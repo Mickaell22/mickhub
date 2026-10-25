@@ -4,7 +4,13 @@ Cliente de git de escritorio a la medida del dueño, para reemplazar a GitHub De
 
 Proyecto hermano: **Surco** (`../Surco`), su reproductor de música en Flutter. MickHub hereda de ahí el flujo de trabajo, el estilo de README y la idea de temas y decoraciones, pero mucho más cargada. Antes de reinventar algo de temas, paletas aleatorias, temporadas o `CustomPainter`, mirar cómo lo resolvió Surco (`lib/settings.dart`, `lib/theme.dart`, `lib/ui/decor.dart`) y sus trampas en `../Surco/CLAUDE.md`.
 
-Estado: **esqueleto**. `app/` es un `flutter create --empty` (org `com.mickaell`, plataformas windows, linux y android) y `api/` es un FastAPI con solo `GET /health`. Todavía no hay funcionalidad.
+Estado: **v1 en curso**. `app/` (org `com.mickaell`, plataformas windows, linux y android) ya tiene la vista principal al estilo de GitHub Desktop: barra con repositorio, rama y fetch/pull/push; tabs Cambios (casillas, commit, diff) e Historial; clonado desde la lista de repos de GitHub. Falta: candado de cambios locales, Azure DevOps, búsqueda en historial. `api/` es un FastAPI con solo `GET /health`.
+
+## Diseño base: copia de GitHub Desktop
+
+El layout y los colores salen de GitHub Desktop 3.4 (MIT), sacados con ingeniería inversa de sus SCSS originales: vienen enteros en `sourcesContent` de `resources/app/renderer.css.map` (en Kali: `/usr/lib/github-desktop/resources/app/`). Para medir algo nuevo, extraer de ahí en vez de adivinar; `themes/_dark.scss` y `_variables.scss` tienen casi todo. Los valores ya resueltos (darken/lighten de Sass pasados a hex) viven en `app/lib/theme.dart` (`Gh`) y los de sintaxis en `app/lib/syntax.dart`. Esta es la **base**; la personalización (temas, decoraciones) va encima y no debe romper estas medidas.
+
+Mapa de `app/lib/`: `main.dart` (ventana, barra, desplegables), `panes.dart` (Cambios e Historial), `diff_view.dart` (parser y visor de diff), `syntax.dart` (resaltado con el paquete `highlight`), `git.dart` (todo lo que llama a git), `github.dart` (API de GitHub), `clone_dialog.dart`, `settings.dart`, `theme.dart`.
 
 ## Por qué existe (el problema real)
 
@@ -27,6 +33,8 @@ GitHub Desktop se le queda corto en:
 - **Backend mínimo en Railway**: API + Postgres. La app habla con la API, nunca directo con la base. Motivo: no repartir credenciales de la base ni la key de DeepSeek en cada dispositivo (y el celu). La key de DeepSeek vive solo en el servidor.
 - API en **FastAPI** (Python), como mcp-context. Confirmado por el dueño.
 - **Un solo repo** con carpetas divididas: `app/` (Flutter) y `api/` (FastAPI). Confirmado: antes hacía dos repos (front y back) y ya no quiere eso.
+- **MickHub no guarda tokens**: los pide al credential helper de git con `git credential fill` (`credentialToken` en `app/lib/git.dart`). En Linux responde `gh`; en Windows el Git Credential Manager, que también cubre Azure DevOps y las dos cuentas. Nada de almacenamiento seguro propio mientras esto alcance.
+- Ajustes (carpeta de repos, repos agregados a mano, repo abierto, ancho de la columna) en un JSON chico en el directorio de soporte de la app, como Surco; sin `shared_preferences`.
 - Resúmenes con IA **solo para el dueño**, no para el equipo. No hace falta multiusuario ni permisos finos: una sola cuenta.
 - El dueño confirmó que **sí puede mandar código del trabajo a la IA** ("son pro IA"). Igual dejar la IA configurable por repo.
 
@@ -71,12 +79,12 @@ Reglas para esto:
 - Commits chicos, uno por cambio lógico; cada commit compila y pasa tests.
 - Antes de cada commit: `flutter analyze` sin issues y `flutter test` en verde. Verificar que el mensaje no tenga `Co-Authored-By` ni similares.
 - Textos de la UI **en español con tildes y eñes**.
-- Flutter está en `/opt/flutter/bin` y se corre como `mickaell` (Claude Code corre como root): `sudo -u mickaell -H bash -c 'export PATH=/opt/flutter/bin:$PATH; cd ...; flutter ...'`. Después de editar como root, `chown -R mickaell:mickaell .`.
+- Flutter está en `/opt/flutter/bin` y se corre como `mickaell` (Claude Code corre como root): `sudo -u mickaell -H bash -c 'export PATH=/opt/flutter/bin:$PATH; cd ...; flutter ...'`. Después de editar como root, `chown -R mickaell:mickaell .`. Compilar para Linux pide `cmake ninja-build clang pkg-config libgtk-3-dev`, y con clang 21 también `lld-21` y `llvm-21` (Flutter busca `ld.lld` y `llvm-ar` en `/usr/lib/llvm-21/bin`). Para ver la app desde Claude: lanzarla como `mickaell` con `DISPLAY=:0 XAUTHORITY=/home/mickaell/.Xauthority` y sacar captura con `import -window <id>` (id con `xdotool search --name '^mickhub$'`); `xdotool` también sirve para hacer clics.
 - `gh` está logueado como `mickaell`; correrlo con `unset GH_TOKEN` (el GH_TOKEN de root es inválido).
 - Todo valor configurable (URL de la API, tokens, DATABASE_URL, DEEPSEEK_API_KEY) va en variables de entorno con su `.env.example`; nunca en el código, ni como default. Repo público: nada de datos personales ni de la empresa en el código.
 
 ## Preguntas abiertas
 
 - Cómo se autentica la app contra la API (una sola cuenta: token personal largo en variable de entorno o en el almacenamiento seguro del sistema).
-- Cómo lista los repos de Azure DevOps (API REST con un PAT) y cómo guarda los tokens de GitHub y Azure en cada dispositivo (almacenamiento seguro del sistema, nunca texto plano).
+- Cómo lista los repos de Azure DevOps: el token sale del GCM igual que el de GitHub, pero hay que descubrir las organizaciones del usuario antes de listar repos.
 - Primer set de temas temáticos y personajes a dibujar.
