@@ -13,6 +13,7 @@ import 'repo_dialogs.dart';
 import 'settings.dart';
 import 'system.dart';
 import 'theme.dart';
+import 'updater.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -58,6 +59,9 @@ class _ShellState extends State<Shell> {
   final _lastFetch = <String, DateTime>{};
   late final AppLifecycleListener _lifecycle;
   StreamSubscription<FileSystemEvent>? _settingsWatch;
+  Release? _update; // versión nueva publicada, si hay
+  (String, int?)? _editorFocus; // archivo y línea que se ven en Cambios, para abrirlos en el editor
+  Timer? _updateTimer;
   Timer? _reloadDebounce;
 
   @override
@@ -73,6 +77,9 @@ class _ShellState extends State<Shell> {
     );
     _checkSessions();
     s.trash.purge(Duration(days: s.trashDays)); // la papelera se vacía sola
+    // Busca versiones nuevas al abrir y cada 6 h (solo en builds de release).
+    _checkUpdate();
+    _updateTimer = Timer.periodic(const Duration(hours: 6), (_) => _checkUpdate());
     // Si alguien edita el JSON de ajustes desde fuera (Claude Code clonando o
     // agrupando repos), se recarga la lista sin reiniciar la app.
     _settingsWatch = s.watch(() {
@@ -89,6 +96,7 @@ class _ShellState extends State<Shell> {
   void dispose() {
     _lifecycle.dispose();
     _settingsWatch?.cancel();
+    _updateTimer?.cancel();
     _reloadDebounce?.cancel();
     super.dispose();
   }
@@ -111,6 +119,7 @@ class _ShellState extends State<Shell> {
   }
 
   Future<void> _open(String repo) async {
+    _editorFocus = null;
     setState(() {
       _repo = repo;
       _branch = null;
@@ -227,6 +236,80 @@ class _ShellState extends State<Shell> {
       if (mounted) setState(() => _syncing = false);
       await _refresh();
     }
+  }
+
+  Future<void> _checkUpdate() async {
+    final r = await checkForUpdate();
+    if (mounted && r != null) setState(() => _update = r);
+  }
+
+  Future<void> _showUpdate() async {
+    final r = _update!;
+    final releasePage = 'https://github.com/$releaseRepo/releases/tag/${r.tag}';
+    var busy = false;
+    String? error;
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (c) => StatefulBuilder(
+        builder: (c, setD) => AlertDialog(
+          title: Row(
+            children: [
+              const Icon(Icons.system_update_alt, size: 18, color: Gh.added),
+              const SizedBox(width: 8),
+              Text('MickHub ${r.tag} disponible', style: const TextStyle(fontSize: 14)),
+            ],
+          ),
+          content: SizedBox(
+            width: 520,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Tienes la $appVersion.', style: const TextStyle(color: Gh.textSecondary)),
+                const SizedBox(height: Gh.sp),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 260),
+                  child: SingleChildScrollView(child: SelectableText(r.notes.isEmpty ? 'Sin notas.' : r.notes)),
+                ),
+                if (error != null) ...[const SizedBox(height: Gh.sp), Text(error!, style: const TextStyle(color: Gh.deleted))],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: busy ? null : () => Navigator.pop(c), child: const Text('Más tarde')),
+            TextButton(onPressed: () => openFolder(releasePage), child: const Text('Ver en GitHub')),
+            FilledButton.icon(
+              icon: busy
+                  ? const SizedBox.square(dimension: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.download, size: 16),
+              label: Text(busy ? 'Descargando…' : 'Actualizar y reiniciar'),
+              onPressed: busy
+                  ? null
+                  : () async {
+                      if (!canWriteInstallDir()) {
+                        setD(() => error = 'No puedo escribir en ${installDir.path}. Descárgala desde GitHub y reemplaza la carpeta.');
+                        return;
+                      }
+                      setD(() {
+                        busy = true;
+                        error = null;
+                      });
+                      try {
+                        await downloadAndApply(r);
+                        exit(0); // el script de actualización espera este cierre
+                      } catch (e) {
+                        setD(() {
+                          busy = false;
+                          error = '$e';
+                        });
+                      }
+                    },
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   /// Cuenta del repo abierto: la forzada a mano o la que calza con su remoto.
@@ -348,7 +431,13 @@ class _ShellState extends State<Shell> {
           ],
         ),
       ),
-      actions: [FilledButton(onPressed: () => Navigator.pop(c), child: const Text('Cerrar'))],
+      actions: [
+        Text(
+          'MickHub ${appVersion.isEmpty ? '(compilación local)' : appVersion}',
+          style: const TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
+        ),
+        FilledButton(onPressed: () => Navigator.pop(c), child: const Text('Cerrar')),
+      ],
     ),
   );
 
@@ -452,6 +541,16 @@ class _ShellState extends State<Shell> {
             onTap: _repo == null || b == null || _syncing ? null : _sync,
           ),
           const Spacer(),
+          if (_update != null)
+            Padding(
+              padding: const EdgeInsets.only(right: 6),
+              child: FilledButton.icon(
+                style: FilledButton.styleFrom(backgroundColor: Gh.added, visualDensity: VisualDensity.compact),
+                onPressed: _showUpdate,
+                icon: const Icon(Icons.system_update_alt, size: 16),
+                label: Text('Actualizar a ${_update!.tag}'),
+              ),
+            ),
           IconButton(
             tooltip: 'Atajos de teclado (Ctrl+/)',
             iconSize: 18,
@@ -493,9 +592,12 @@ class _ShellState extends State<Shell> {
     }
   }
 
+  /// Abre el repo en el editor y, si estoy mirando un archivo en Cambios,
+  /// también ese archivo en la primera línea que cambió.
   Future<void> _openEditor(String path) async {
+    final focus = path == _repo && _tab == RepoTab.changes ? _editorFocus : null;
     try {
-      await openInEditor(s.editorCommand, path);
+      await openInEditor(s.editorCommand, path, file: focus?.$1, line: focus?.$2);
     } catch (_) {
       _snack('No se encontró el editor "${s.editorCommand}". ¿Está instalado y en el PATH?');
     }
@@ -973,6 +1075,7 @@ class _ShellState extends State<Shell> {
             onCommitted: _refresh,
             onOpenFolder: _openFolder,
             onOpenEditor: () => _openEditor(repo),
+            onFocusFile: (f) => _editorFocus = f,
             trash: s.trash,
             editorCommand: s.editorCommand,
             account: _account,

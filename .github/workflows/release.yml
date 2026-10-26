@@ -2,6 +2,8 @@
 #   mickhub-linux-x64.tar.gz   -> descomprimir y abrir MickHub/mickhub
 #   mickhub-windows-x64.zip    -> descomprimir y abrir MickHub\mickhub.exe
 # Los nombres no llevan versión para que releases/latest/download/... no se rompa.
+# La versión y el repo se pasan con --dart-define: así el actualizador de la app
+# sabe qué versión es y dónde buscar las nuevas (en builds locales queda apagado).
 name: release
 
 on:
@@ -28,7 +30,7 @@ jobs:
         run: |
           flutter pub get
           flutter test
-          flutter build linux --release
+          flutter build linux --release --dart-define=MICKHUB_VERSION=$GITHUB_REF_NAME --dart-define=MICKHUB_REPO=$GITHUB_REPOSITORY
           mkdir -p dist && cp -r build/linux/x64/release/bundle dist/MickHub
           tar -C dist -czf mickhub-linux-x64.tar.gz MickHub
       - uses: actions/upload-artifact@v4
@@ -48,7 +50,7 @@ jobs:
         shell: pwsh
         run: |
           flutter pub get
-          flutter build windows --release
+          flutter build windows --release --dart-define=MICKHUB_VERSION=$env:GITHUB_REF_NAME --dart-define=MICKHUB_REPO=$env:GITHUB_REPOSITORY
           New-Item -ItemType Directory dist | Out-Null
           Copy-Item -Recurse build/windows/x64/runner/Release dist/MickHub
           Compress-Archive -Path dist/MickHub -DestinationPath mickhub-windows-x64.zip

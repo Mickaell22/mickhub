@@ -115,7 +115,10 @@ void historyAndConflicts() {
     File('$local/a.txt').writeAsStringSync('mío\n');
     await commitAll(local, 'local');
 
-    await expectLater(git(['-c', 'pull.rebase=false', 'pull', '-q'], cwd: local), throwsA(isA<GitException>()));
+    await expectLater(
+      git(['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'pull.rebase=false', 'pull', '-q'], cwd: local),
+      throwsA(isA<GitException>()),
+    );
     expect(await mergeState(local), MergeState.merge);
     expect((await status(local)).single.status, FileStatus.conflicted);
     final lines = File('$local/a.txt').readAsLinesSync();

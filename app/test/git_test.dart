@@ -4,6 +4,7 @@ import 'package:mickhub/diff_view.dart';
 import 'package:mickhub/github.dart';
 import 'package:mickhub/panes.dart';
 import 'package:mickhub/syntax.dart';
+import 'package:mickhub/system.dart';
 
 void main() {
   test('parseKeyValues respeta los = dentro del valor', () {
@@ -72,5 +73,14 @@ void main() {
   test('highlightInIsolate funciona fuera del hilo principal', () async {
     final hl = await highlightInIsolate(["final a = 'x';"], 'dart');
     expect(hl!.single.any((s) => s.text == 'final'), isTrue);
+  });
+
+  test('editorArgs abre carpeta y archivo, con línea solo en VS Code', () {
+    expect(editorArgs('code', '/r'), ['/r']);
+    expect(editorArgs('code', '/r', file: 'lib/a.dart', line: 12), ['/r', '-g', '/r/lib/a.dart:12']);
+    expect(editorArgs('/usr/bin/codium', '/r', file: 'a.dart', line: 3), ['/r', '-g', '/r/a.dart:3']);
+    expect(editorArgs('code.cmd', '/r', file: 'a.dart', line: 3), ['/r', '-g', '/r/a.dart:3']);
+    expect(editorArgs('subl', '/r', file: 'a.dart', line: 3), ['/r', '/r/a.dart']);
+    expect(editorArgs('code', '/r', file: 'a.dart'), ['/r', '/r/a.dart']);
   });
 }

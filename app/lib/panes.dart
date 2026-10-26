@@ -134,6 +134,7 @@ class ChangesPane extends StatefulWidget {
     required this.onCommitted,
     required this.onOpenFolder,
     required this.onOpenEditor,
+    required this.onFocusFile,
     required this.trash,
     required this.editorCommand,
     this.account,
@@ -145,6 +146,10 @@ class ChangesPane extends StatefulWidget {
   final VoidCallback onCommitted;
   final ValueChanged<String> onOpenFolder;
   final VoidCallback onOpenEditor;
+
+  /// Avisa qué archivo (y en qué línea) se está mirando, para que "Abrir en el
+  /// editor" lo abra ahí. null si no hay ninguno.
+  final ValueChanged<(String, int?)?> onFocusFile;
   final Trash trash;
   final String editorCommand;
 
@@ -214,13 +219,45 @@ class _ChangesPaneState extends State<ChangesPane> {
 
   Future<void> _loadDiff() async {
     final f = _files.where((f) => f.path == _selected).firstOrNull;
-    if (f == null) return setState(() => _diff = null);
+    if (f == null) {
+      widget.onFocusFile(null);
+      return setState(() => _diff = null);
+    }
     try {
       final d = await fileDiff(widget.repo, f);
-      if (mounted && _selected == f.path) setState(() => _diff = d);
+      if (mounted && _selected == f.path) {
+        setState(() => _diff = d);
+        widget.onFocusFile(f.status == FileStatus.deleted ? null : (f.path, _focusLine(f, d)));
+      }
     } on GitException catch (e) {
       if (mounted) setState(() => _diff = null);
       debugPrint(e.toString());
+    }
+  }
+
+  /// Línea donde abrir el archivo: el primer conflicto, o el primer cambio del diff.
+  int? _focusLine(FileChange f, String diff) {
+    if (f.status == FileStatus.conflicted) {
+      final file = File('${widget.repo}/${f.path}');
+      if (!file.existsSync()) return null;
+      final i = file.readAsLinesSync().indexWhere((l) => l.startsWith('<<<<<<<'));
+      return i < 0 ? null : i + 1;
+    }
+    final first = parseDiff(diff)?.where((l) => l.kind == LineKind.add || l.kind == LineKind.delete).firstOrNull;
+    return first?.newNo ?? first?.oldNo;
+  }
+
+  Future<void> _openFileInEditor(FileChange f) async {
+    String? d;
+    try {
+      d = await fileDiff(widget.repo, f);
+    } on GitException {
+      d = null;
+    }
+    try {
+      await openInEditor(widget.editorCommand, widget.repo, file: f.path, line: d == null ? null : _focusLine(f, d));
+    } catch (_) {
+      if (mounted) _snack('No se encontró el editor "${widget.editorCommand}". ¿Está instalado y en el PATH?');
     }
   }
 
@@ -383,7 +420,7 @@ class _ChangesPaneState extends State<ChangesPane> {
                 label: const Text('Usar la del remoto'),
               ),
               OutlinedButton.icon(
-                onPressed: () => openInEditor(widget.editorCommand, file.path),
+                onPressed: () => _openFileInEditor(f),
                 icon: const Icon(Icons.code, size: 16),
                 label: const Text('Corregir en el editor'),
               ),
@@ -428,6 +465,7 @@ class _ChangesPaneState extends State<ChangesPane> {
         menuItem('protect', Icons.lock_outline, 'Proteger cambio local (nunca subirlo)'),
         menuItem('shelve', Icons.inventory_2_outlined, 'Apartar este archivo…'),
         const PopupMenuDivider(),
+        if (f.status != FileStatus.deleted) menuItem('editor', Icons.code, 'Abrir en el editor'),
         menuItem('copy', Icons.content_copy, 'Copiar ruta'),
         menuItem('folder', Icons.folder_open_outlined, 'Abrir carpeta del archivo'),
         const PopupMenuDivider(),
@@ -446,6 +484,8 @@ class _ChangesPaneState extends State<ChangesPane> {
             await discard(widget.repo, f);
           });
         }
+      case 'editor':
+        await _openFileInEditor(f);
       case 'copy':
         await Clipboard.setData(ClipboardData(text: f.path));
       case 'folder':
