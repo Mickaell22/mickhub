@@ -105,9 +105,22 @@ Future<bool> isTracked(String repo, String path) async {
 /// Commitea solo [paths], como GitHub Desktop: lo que no se eligió no entra
 /// aunque estuviera en el stage.
 /// [identity] son los `-c user.name=… -c user.email=…` de la cuenta del repo.
-Future<void> commit(String repo, List<String> paths, String summary, String description, {List<String> identity = const []}) async {
+///
+/// [partial] son archivos que entran solo en parte: ruta -> parche con los
+/// bloques elegidos (de [selectHunks] sobre su diff contra HEAD).
+Future<void> commit(
+  String repo,
+  List<String> paths,
+  String summary,
+  String description, {
+  List<String> identity = const [],
+  Map<String, String> partial = const {},
+}) async {
   await git(['reset', '-q'], cwd: repo, okCodes: {0, 1, 128}); // 128: repo sin commits todavía
-  await git(['add', '-A', '--', ...paths], cwd: repo);
+  if (paths.isNotEmpty) await git(['add', '-A', '--', ...paths], cwd: repo);
+  for (final patch in partial.values) {
+    await git(['apply', '--cached', '-'], cwd: repo, stdin: patch); // solo esos bloques al stage
+  }
   await git([
     ...identity,
     'commit',
@@ -396,8 +409,14 @@ Future<void> shelve(String repo, String name, List<String> paths) =>
 /// Si esos archivos tienen otros cambios ahora (p. ej. se apartaron solo unos
 /// bloques), `stash pop` se niega; entonces se aplica el apartado como parche
 /// sobre lo actual y, si entra limpio, se borra.
+///
+/// Se revisa antes de intentar el `pop`: si falla a mitad, ya devolvió los
+/// archivos nuevos y el parche choca con ellos ("already exists").
 Future<void> unshelve(String repo, Shelf s) async {
+  final changed = {for (final f in await status(repo)) f.path};
+  final overlaps = (await shelfFiles(repo, s)).any(changed.contains);
   try {
+    if (overlaps) throw GitException(['stash', 'pop'], 'would be overwritten');
     await git(['stash', 'pop', s.ref], cwd: repo);
   } on GitException catch (e) {
     if (!e.message.contains('would be overwritten')) rethrow;
@@ -552,28 +571,46 @@ String? selectHunks(String diff, Set<int> hunks) {
 }
 
 /// Aparta solo algunos bloques de un archivo versionado: el apartado guarda esos
-/// bloques y el archivo se queda con el resto de los cambios. Si algo falla a
-/// mitad, el archivo vuelve a como estaba.
+/// bloques y el archivo se queda con el resto de los cambios.
+Future<void> shelveHunks(String repo, String path, String diff, Set<int> hunks, String name) =>
+    shelveParts(repo, name, whole: const [], parts: {path: (diff, hunks)});
+
+/// Aparta en un solo apartado [whole] (archivos enteros) y, de [parts], solo
+/// los bloques elegidos de cada archivo (su diff contra HEAD e índices de
+/// bloque); esos archivos se quedan con el resto de sus cambios. Si algo falla a
+/// mitad, los archivos repartidos vuelven a como estaban.
 // ponytail: la granularidad es el bloque del diff con 3 líneas de contexto; dos
 // cambios a menos de ~6 líneas caen en el mismo bloque. Upgrade: elegir líneas.
-Future<void> shelveHunks(String repo, String path, String diff, Set<int> hunks, String name) async {
-  final patch = selectHunks(diff, hunks);
-  if (patch == null) return;
-  final file = File('$repo/$path');
-  final original = await file.readAsBytes();
-  final patchFile = File('${(await Directory.systemTemp.createTemp('mickhub_patch')).path}/bloques.patch');
-  await patchFile.writeAsString(patch);
+Future<void> shelveParts(String repo, String name, {required List<String> whole, required Map<String, (String, Set<int>)> parts}) async {
+  final tmp = await Directory.systemTemp.createTemp('mickhub_patch');
+  final originals = <String, List<int>>{};
+  final rests = <String, List<int>>{};
   try {
-    await git(['apply', '-R', patchFile.path], cwd: repo); // archivo = todo menos los bloques
-    final rest = await file.readAsBytes();
-    await git(['checkout', 'HEAD', '--', path], cwd: repo); // archivo = último commit
-    await git(['apply', patchFile.path], cwd: repo); // + solo los bloques
-    await shelve(repo, name, [path]); // se guardan y el archivo vuelve al commit
-    await file.writeAsBytes(rest); // y recupera el resto
+    var i = 0;
+    for (final MapEntry(key: path, value: (diff, hunks)) in parts.entries) {
+      final patch = selectHunks(diff, hunks);
+      if (patch == null) continue;
+      final file = File('$repo/$path');
+      final patchFile = File('${tmp.path}/${i++}.patch');
+      await patchFile.writeAsString(patch);
+      originals[path] = await file.readAsBytes();
+      await git(['apply', '-R', patchFile.path], cwd: repo); // archivo = todo menos los bloques
+      rests[path] = await file.readAsBytes();
+      await git(['checkout', 'HEAD', '--', path], cwd: repo); // archivo = último commit
+      await git(['apply', patchFile.path], cwd: repo); // + solo los bloques
+    }
+    final paths = [...whole, ...rests.keys];
+    if (paths.isEmpty) return;
+    await shelve(repo, name, paths); // se guardan; los archivos vuelven al commit
+    for (final e in rests.entries) {
+      await File('$repo/${e.key}').writeAsBytes(e.value); // y los repartidos recuperan el resto
+    }
   } catch (_) {
-    await file.writeAsBytes(original);
+    for (final e in originals.entries) {
+      await File('$repo/${e.key}').writeAsBytes(e.value);
+    }
     rethrow;
   } finally {
-    await patchFile.parent.delete(recursive: true);
+    await tmp.delete(recursive: true);
   }
 }

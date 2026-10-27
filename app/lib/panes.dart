@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'accounts.dart';
+import 'change_groups.dart';
+import 'change_groups_ui.dart';
 import 'avatar.dart';
 import 'system.dart';
 import 'diff_view.dart';
@@ -162,7 +164,7 @@ class ChangesPane extends StatefulWidget {
 
 /// Lo último que se leyó de cada repo, para mostrarlo al instante al volver a
 /// él mientras se relee de git.
-typedef _Snapshot = (List<FileChange>, List<Protected>, List<Shelf>, String?, MergeState);
+typedef _Snapshot = (List<FileChange>, List<Protected>, List<Shelf>, String?, MergeState, ChangeGroups, Map<String, String>);
 final _snapshots = <String, _Snapshot>{};
 
 class _ChangesPaneState extends State<ChangesPane> {
@@ -174,8 +176,11 @@ class _ChangesPaneState extends State<ChangesPane> {
   String? _gitIdentity; // la de git (repo o global), si el repo no tiene cuenta
   bool _showShelves = true;
   bool _showProtected = true;
-  final _excluded = <String>{};
+  final _excluded = <String>{}; // filas (grupo + ruta, ver [_key]) que no entran al commit
+  ChangeGroups _groups = ChangeGroups();
+  Map<String, String> _splitDiffs = {}; // diff de los archivos repartidos entre grupos
   String? _selected;
+  String _selGroup = ''; // grupo de la fila elegida (un archivo repartido aparece en varios)
   String? _diff;
   final _summary = TextEditingController();
   final _description = TextEditingController();
@@ -216,13 +221,29 @@ class _ChangesPaneState extends State<ChangesPane> {
     try {
       do {
         _reload = false;
-        final r = await (
+        final (files, locked, shelved, identity, merge, groups) = await (
           status(widget.repo),
           protectedFiles(widget.repo),
           shelves(widget.repo),
           gitIdentity(widget.repo),
           mergeState(widget.repo),
+          ChangeGroups.load(widget.repo),
         ).wait;
+        if (groups.sync(files.map((f) => f.path))) await groups.save(widget.repo);
+        final split = [
+          for (final f in files)
+            if (groups.hunks.containsKey(f.path)) f,
+        ];
+        final diffs = await Future.wait(split.map((f) => fileDiff(widget.repo, f).catchError((_) => '')));
+        final _Snapshot r = (
+          files,
+          locked,
+          shelved,
+          identity,
+          merge,
+          groups,
+          {for (var i = 0; i < split.length; i++) split[i].path: diffs[i]},
+        );
         _snapshots[widget.repo] = r;
         if (!mounted) return;
         setState(() => _apply(r));
@@ -234,16 +255,204 @@ class _ChangesPaneState extends State<ChangesPane> {
   }
 
   void _apply(_Snapshot r) {
-    final (files, locked, shelved, identity, merge) = r;
+    final (files, locked, shelved, identity, merge, groups, splitDiffs) = r;
+    _groups = groups;
+    _splitDiffs = splitDiffs;
     _merge = merge;
     _files = files;
     _protected = locked;
     _shelves = shelved;
     _gitIdentity = identity;
-    _excluded.retainAll(files.map((f) => f.path));
-    if (!files.any((f) => f.path == _selected)) {
-      _selected = files.isEmpty ? null : files.first.path;
+    final rows = _rows;
+    _excluded.retainAll(rows.map((r) => _key(r.$1, r.$2.path)));
+    if (!rows.any((r) => r.$2.path == _selected && r.$1 == _selGroup)) {
+      final first = rows.where((r) => r.$2.path == _selected).firstOrNull ?? rows.firstOrNull;
+      _selected = first?.$2.path;
+      _selGroup = first?.$1 ?? '';
     }
+  }
+
+  // --- Grupos de cambios ---------------------------------------------------------
+
+  static String _key(String group, String path) => '$group\u0000$path';
+
+  /// Grupos en el orden de la lista; "Sin grupo" ('') al final.
+  List<String> get _sections => [..._groups.names, ''];
+
+  /// Grupos donde aparece [f]: uno, o varios si sus bloques están repartidos.
+  List<String> _groupsOf(FileChange f) {
+    final d = _splitDiffs[f.path];
+    final hg = d == null ? const <String>[] : _groups.hunkGroups(f.path, d);
+    if (hg.isEmpty) return [_groups.groupOf(f.path)];
+    return [
+      for (final g in _sections)
+        if (hg.contains(g)) g,
+    ];
+  }
+
+  /// Filas de la lista: (grupo, archivo), agrupadas en el orden de [_sections].
+  List<(String, FileChange)> get _rows {
+    final of = {for (final f in _files) f.path: _groupsOf(f)};
+    return [
+      for (final g in _sections)
+        for (final f in _files)
+          if (of[f.path]!.contains(g)) (g, f),
+    ];
+  }
+
+  bool _included(String group, FileChange f) => !_excluded.contains(_key(group, f.path));
+
+  /// Lo marcado, listo para commitear o apartar: archivos enteros y, de los
+  /// repartidos con solo algunos grupos marcados, los índices de sus bloques.
+  (List<FileChange>, Map<String, (String, Set<int>)>) _marked() {
+    final whole = <FileChange>[];
+    final parts = <String, (String, Set<int>)>{};
+    for (final f in _files) {
+      final gs = _groupsOf(f);
+      final inc = gs.where((g) => _included(g, f)).toSet();
+      if (inc.isEmpty) continue;
+      if (inc.length == gs.length) {
+        whole.add(f);
+        continue;
+      }
+      final d = _splitDiffs[f.path]!;
+      final hg = _groups.hunkGroups(f.path, d);
+      parts[f.path] = (
+        d,
+        {
+          for (var i = 0; i < hg.length; i++)
+            if (inc.contains(hg[i])) i,
+        },
+      );
+    }
+    return (whole, parts);
+  }
+
+  Future<void> _saveGroups(void Function(ChangeGroups g) change) async {
+    change(_groups);
+    setState(() {});
+    await _groups.save(widget.repo);
+    await _load();
+  }
+
+  Future<void> _newGroup({List<FileChange> take = const []}) async {
+    final name = await askGroupName(context, title: 'Nuevo grupo de cambios', taken: _groups.names.toSet());
+    if (name == null) return;
+    // Queda activo: lo que se toque de ahora en adelante cae aquí.
+    await _saveGroups((g) => g.add(name, _files.map((f) => f.path), take: take.map((f) => f.path)));
+  }
+
+  Future<void> _moveFileTo(FileChange f, Offset at) async {
+    final to = await pickGroup(context, at, _groups.names, current: _groupsOf(f).length == 1 ? _groupsOf(f).single : null);
+    if (to == null) return;
+    await _saveGroups((g) {
+      if (to.isNotEmpty && !g.names.contains(to)) g.add(to, _files.map((f) => f.path));
+      g.moveFile(f.path, to);
+    });
+  }
+
+  /// Mueve los bloques marcados del archivo elegido a otro grupo.
+  Future<void> _moveHunksTo(FileChange f, Offset at) async {
+    final to = await pickGroup(context, at, _groups.names, current: _selGroup);
+    if (to == null) return;
+    final full = _splitDiffs[f.path] ?? await fileDiff(widget.repo, f);
+    // Los índices marcados son del diff que se ve (el de este grupo); se pasan
+    // por su clave a índices del diff completo.
+    final shown = hunkKeys(_diff ?? '');
+    final keys = {
+      for (final i in _hunks)
+        if (i < shown.length) shown[i],
+    };
+    final all = hunkKeys(full);
+    final indices = {
+      for (var i = 0; i < all.length; i++)
+        if (keys.contains(all[i])) i,
+    };
+    _hunks.clear();
+    await _saveGroups((g) {
+      if (to.isNotEmpty && !g.names.contains(to)) g.add(to, _files.map((f) => f.path));
+      g.moveHunks(f.path, full, indices, to);
+    });
+  }
+
+  void _toggleSection(String group) => _saveGroups((g) => g.collapsed.contains(group) ? g.collapsed.remove(group) : g.collapsed.add(group));
+
+  Future<void> _groupMenu(String group, Offset at) async {
+    final named = group.isNotEmpty;
+    final active = named && _groups.active == group;
+    final action = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(at.dx, at.dy, at.dx, at.dy),
+      items: [
+        if (named)
+          menuItem('active', active ? Icons.star : Icons.star_outline, active ? 'Dejar de usar como activo' : 'Usar como grupo activo'),
+        menuItem('only', Icons.check_box_outlined, 'Marcar solo este grupo para el commit'),
+        if (named) ...[
+          menuItem('shelve', Icons.inventory_2_outlined, 'Apartar grupo…'),
+          menuItem('protect', Icons.lock_outline, 'Proteger grupo (nunca subirlo)'),
+        ],
+        const PopupMenuDivider(),
+        menuItem('expand', Icons.unfold_more, 'Expandir todo'),
+        menuItem('collapse', Icons.unfold_less, 'Contraer todo'),
+        if (named) ...[
+          const PopupMenuDivider(),
+          menuItem('rename', Icons.edit_outlined, 'Renombrar…'),
+          menuItem('delete', Icons.delete_outline, 'Eliminar grupo (los cambios quedan)', danger: true),
+        ],
+      ],
+    );
+    final rows = _rows.where((r) => r.$1 == group).toList();
+    switch (action) {
+      case 'active':
+        await _saveGroups((g) => g.active = active ? null : group);
+      case 'only':
+        setState(() {
+          _excluded
+            ..clear()
+            ..addAll([
+              for (final r in _rows)
+                if (r.$1 != group) _key(r.$1, r.$2.path),
+            ]);
+        });
+      case 'shelve':
+        await _shelveGroup(group, rows.map((r) => r.$2).toList());
+      case 'protect':
+        final whole = rows.where((r) => _groupsOf(r.$2).length == 1).map((r) => r.$2).toList();
+        if (whole.length < rows.length) _snack('Los archivos repartidos con otro grupo no se pueden proteger a medias; se dejaron igual.');
+        await _guard(() async {
+          for (final f in whole) {
+            await protect(widget.repo, f);
+          }
+        });
+      case 'expand':
+        await _saveGroups((g) => g.collapsed.clear());
+      case 'collapse':
+        await _saveGroups((g) => g.collapsed = _sections.toSet());
+      case 'rename':
+        if (!mounted) return;
+        final to = await askGroupName(context, title: 'Renombrar grupo', initial: group, taken: _groups.names.toSet());
+        if (to != null && to != group) await _saveGroups((g) => g.rename(group, to));
+      case 'delete':
+        await _saveGroups((g) => g.remove(group));
+    }
+  }
+
+  /// Aparta todo lo de un grupo en un solo apartado con su nombre: archivos
+  /// enteros y, de los repartidos, solo sus bloques.
+  Future<void> _shelveGroup(String group, List<FileChange> files) async {
+    final parts = <String, (String, Set<int>)>{};
+    for (final f in files.where((f) => _groupsOf(f).length > 1)) {
+      final d = _splitDiffs[f.path]!;
+      final hg = _groups.hunkGroups(f.path, d);
+      parts[f.path] = (
+        d,
+        {
+          for (var i = 0; i < hg.length; i++)
+            if (hg[i] == group) i,
+        },
+      );
+    }
+    await _shelve(files, parts: parts, suggested: group);
   }
 
   Future<void> _loadDiff() async {
@@ -253,7 +462,17 @@ class _ChangesPaneState extends State<ChangesPane> {
       return setState(() => _diff = null);
     }
     try {
-      final d = await fileDiff(widget.repo, f);
+      var d = await fileDiff(widget.repo, f);
+      // Un archivo repartido muestra solo los bloques del grupo elegido.
+      if (_groupsOf(f).length > 1) {
+        final hg = _groups.hunkGroups(f.path, d);
+        d =
+            selectHunks(d, {
+              for (var i = 0; i < hg.length; i++)
+                if (hg[i] == _selGroup) i,
+            }) ??
+            d;
+      }
       if (mounted && _selected == f.path) {
         setState(() => _diff = d);
         widget.onFocusFile(f.status == FileStatus.deleted ? null : (f.path, _focusLine(f, d)));
@@ -307,11 +526,22 @@ class _ChangesPaneState extends State<ChangesPane> {
         Expanded(
           child: Text(
             _hunks.isEmpty
-                ? 'Marca bloques para apartar solo esa parte del archivo'
+                ? 'Marca bloques para apartarlos o moverlos a otro grupo'
                 : '${_hunks.length} ${_hunks.length == 1 ? 'bloque marcado' : 'bloques marcados'}',
             style: const TextStyle(color: Gh.textSecondary),
           ),
         ),
+        if (_hunks.isNotEmpty)
+          Builder(
+            builder: (b) => TextButton.icon(
+              onPressed: () {
+                final box = b.findRenderObject()! as RenderBox;
+                _moveHunksTo(f, box.localToGlobal(Offset(0, box.size.height)));
+              },
+              icon: const Icon(Icons.folder_special_outlined, size: 14),
+              label: const Text('Mover a grupo…'),
+            ),
+          ),
         if (_hunks.isNotEmpty)
           TextButton.icon(
             onPressed: () => _shelveHunks(f, diff),
@@ -346,7 +576,7 @@ class _ChangesPaneState extends State<ChangesPane> {
         ],
       ),
     );
-    ctrl.dispose();
+    disposeAfterDialog(ctrl);
     if (name == null) return;
     final chosen = {..._hunks};
     _hunks.clear();
@@ -493,6 +723,7 @@ class _ChangesPaneState extends State<ChangesPane> {
       items: [
         menuItem('protect', Icons.lock_outline, 'Proteger cambio local (nunca subirlo)'),
         menuItem('shelve', Icons.inventory_2_outlined, 'Apartar este archivo…'),
+        menuItem('group', Icons.folder_special_outlined, 'Mover a grupo…'),
         const PopupMenuDivider(),
         if (f.status != FileStatus.deleted) menuItem('editor', Icons.code, 'Abrir en el editor'),
         menuItem('copy', Icons.content_copy, 'Copiar ruta'),
@@ -506,6 +737,8 @@ class _ChangesPaneState extends State<ChangesPane> {
         await _guard(() => protect(widget.repo, f));
       case 'shelve':
         await _shelve([f]);
+      case 'group':
+        await _moveFileTo(f, at);
       case 'discard':
         if (await _confirmDiscard(f)) {
           await _guard(() async {
@@ -524,9 +757,10 @@ class _ChangesPaneState extends State<ChangesPane> {
 
   /// Aparta [files] con un nombre: salen del working tree y quedan en
   /// "Apartados" hasta recuperarlos.
-  Future<void> _shelve(List<FileChange> files) async {
+  /// [parts] son archivos de [files] que se apartan solo en parte (sus bloques).
+  Future<void> _shelve(List<FileChange> files, {Map<String, (String, Set<int>)> parts = const {}, String? suggested}) async {
     if (files.isEmpty) return;
-    final ctrl = TextEditingController();
+    final ctrl = TextEditingController(text: suggested);
     final name = await showDialog<String>(
       context: context,
       builder: (c) => AlertDialog(
@@ -580,12 +814,36 @@ class _ChangesPaneState extends State<ChangesPane> {
       ),
     );
     if (name == null) return;
-    await _guard(
-      () => shelve(widget.repo, name, [
-        for (final f in files) ...[f.path, ?f.oldPath],
-      ]),
-    );
+    await _guard(() async {
+      for (final p in parts.keys) {
+        await widget.trash.save(widget.repo, p); // copia de seguridad por si acaso
+      }
+      await shelveParts(
+        widget.repo,
+        name,
+        whole: [
+          for (final f in files)
+            if (!parts.containsKey(f.path)) ...[f.path, ?f.oldPath],
+        ],
+        parts: parts,
+      );
+    });
   }
+
+  /// Recupera un apartado. Si se llama como un grupo (se apartó el grupo), sus
+  /// archivos vuelven a ese grupo.
+  // ponytail: vuelven enteros al grupo; si estaban repartidos se pierde el
+  // reparto por bloque. Upgrade: guardar las claves de bloque con el apartado.
+  Future<void> _restoreShelf(Shelf sh) => _guard(() async {
+    final files = await shelfFiles(widget.repo, sh);
+    await unshelve(widget.repo, sh);
+    if (_groups.names.contains(sh.name)) {
+      for (final p in files) {
+        _groups.moveFile(p, sh.name);
+      }
+      await _groups.save(widget.repo);
+    }
+  });
 
   Future<void> _shelfMenu(Shelf sh, Offset at) async {
     final action = await showMenu<String>(
@@ -597,7 +855,7 @@ class _ChangesPaneState extends State<ChangesPane> {
         menuItem('drop', Icons.delete_outline, 'Eliminar apartado…', danger: true),
       ],
     );
-    if (action == 'restore') await _guard(() => unshelve(widget.repo, sh));
+    if (action == 'restore') await _restoreShelf(sh);
     if (action == 'drop' && mounted) {
       final ok = await showDialog<bool>(
         context: context,
@@ -756,22 +1014,27 @@ class _ChangesPaneState extends State<ChangesPane> {
                   ),
                 ),
               ),
-              _rowAction('Recuperar', Icons.unarchive_outlined, () => _guard(() => unshelve(widget.repo, sh))),
+              _rowAction('Recuperar', Icons.unarchive_outlined, () => _restoreShelf(sh)),
             ],
           ),
         ),
     ],
   );
 
-  List<String> get _included => [
-    for (final f in _files)
-      if (!_excluded.contains(f.path)) ...[f.path, ?f.oldPath],
-  ];
-
   Future<void> _commit() async {
     setState(() => _committing = true);
     try {
-      await commit(widget.repo, _included, _summary.text.trim(), _description.text, identity: widget.account?.identityArgs ?? const []);
+      final (whole, parts) = _marked();
+      await commit(
+        widget.repo,
+        [
+          for (final f in whole) ...[f.path, ?f.oldPath],
+        ],
+        _summary.text.trim(),
+        _description.text,
+        identity: widget.account?.identityArgs ?? const [],
+        partial: {for (final e in parts.entries) e.key: selectHunks(e.value.$1, e.value.$2)!},
+      );
       _summary.clear();
       _description.clear();
       widget.onCommitted();
@@ -782,10 +1045,110 @@ class _ChangesPaneState extends State<ChangesPane> {
     }
   }
 
+  /// Encabezado de un grupo: se contrae con un clic, su casilla marca o
+  /// desmarca todo el grupo para el commit y el clic derecho abre sus acciones.
+  Widget _groupHeader(String group, List<(String, FileChange)> rows) {
+    final open = !_groups.collapsed.contains(group);
+    final inc = rows.where((r) => _included(r.$1, r.$2)).length;
+    final active = group.isNotEmpty && _groups.active == group;
+    return GestureDetector(
+      onSecondaryTapUp: (d) => _groupMenu(group, d.globalPosition),
+      child: InkWell(
+        onTap: () => _toggleSection(group),
+        child: Container(
+          color: Gh.box,
+          padding: const EdgeInsets.only(left: 2, right: Gh.sp),
+          child: Row(
+            children: [
+              Icon(open ? Icons.expand_more : Icons.chevron_right, size: 16, color: Gh.textSecondary),
+              Checkbox(
+                tristate: true,
+                value: rows.isEmpty ? false : (inc == rows.length ? true : (inc == 0 ? false : null)),
+                onChanged: rows.isEmpty
+                    ? null
+                    : (_) => setState(() {
+                        final keys = rows.map((r) => _key(r.$1, r.$2.path));
+                        inc == rows.length ? _excluded.addAll(keys) : _excluded.removeAll(keys);
+                      }),
+              ),
+              Icon(group.isEmpty ? Icons.folder_off_outlined : Icons.folder_special_outlined, size: 14, color: Gh.link),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  group.isEmpty ? 'Sin grupo' : group,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+              ),
+              if (active)
+                const Tooltip(
+                  message: 'Grupo activo: lo nuevo que toques cae aquí',
+                  child: Icon(Icons.star, size: 14, color: Gh.modified),
+                ),
+              Text(
+                '  ${rows.length}',
+                style: const TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _fileRow(String group, FileChange f, {required bool indent}) {
+    final split = _groupsOf(f).length > 1;
+    return GhRow(
+      selected: f.path == _selected && group == _selGroup,
+      onTap: () {
+        setState(() {
+          _selected = f.path;
+          _selGroup = group;
+          _hunks.clear();
+        });
+        _loadDiff();
+      },
+      onSecondary: (at) => _fileMenu(f, at),
+      child: Row(
+        children: [
+          if (indent) const SizedBox(width: 18),
+          Checkbox(
+            value: _included(group, f),
+            onChanged: (v) => setState(() => v! ? _excluded.remove(_key(group, f.path)) : _excluded.add(_key(group, f.path))),
+          ),
+          Expanded(
+            child: Tooltip(
+              message: split ? '${f.path}\nRepartido: aquí solo se ven los bloques de este grupo' : f.path,
+              waitDuration: const Duration(seconds: 1),
+              child: Text(f.path, overflow: TextOverflow.ellipsis),
+            ),
+          ),
+          if (split)
+            const Padding(
+              padding: EdgeInsets.only(left: 4),
+              child: Icon(Icons.call_split, size: 12, color: Gh.textSecondary),
+            ),
+          const SizedBox(width: 4),
+          statusIcon(f.status),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final n = _files.length;
-    final checked = n - _excluded.length;
+    final rows = _rows;
+    final checked = rows.where((r) => _included(r.$1, r.$2)).length;
+    final grouped = _groups.names.isNotEmpty;
+    // Elementos de la lista: encabezados de grupo (String) y filas (grupo, archivo).
+    final items = <Object>[
+      for (final g in grouped ? _sections : const [''])
+        if (!grouped || g.isNotEmpty || rows.any((r) => r.$1 == g)) ...[
+          if (grouped) g,
+          if (!_groups.collapsed.contains(g) || !grouped) ...rows.where((r) => r.$1 == g),
+        ],
+    ];
     final sidebar = Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -801,50 +1164,32 @@ class _ChangesPaneState extends State<ChangesPane> {
             children: [
               Checkbox(
                 tristate: true,
-                value: n == 0 ? false : (checked == n ? true : (checked == 0 ? false : null)),
+                value: n == 0 ? false : (checked == rows.length ? true : (checked == 0 ? false : null)),
                 onChanged: n == 0
                     ? null
-                    : (_) => setState(() => checked == n ? _excluded.addAll(_files.map((f) => f.path)) : _excluded.clear()),
+                    : (_) => setState(
+                        () => checked == rows.length ? _excluded.addAll(rows.map((r) => _key(r.$1, r.$2.path))) : _excluded.clear(),
+                      ),
               ),
               Expanded(child: Text(n == 1 ? '1 archivo cambiado' : '$n archivos cambiados', textAlign: TextAlign.center)),
-              const SizedBox(width: 32),
+              IconButton(
+                tooltip: 'Nuevo grupo de cambios',
+                iconSize: 16,
+                visualDensity: VisualDensity.compact,
+                onPressed: () => _newGroup(),
+                icon: const Icon(Icons.create_new_folder_outlined),
+              ),
             ],
           ),
         ),
         Expanded(
           child: ListView.builder(
-            itemCount: n,
+            itemCount: items.length,
             itemExtent: Gh.rowHeight,
-            itemBuilder: (_, i) {
-              final f = _files[i];
-              return GhRow(
-                selected: f.path == _selected,
-                onTap: () {
-                  setState(() {
-                    _selected = f.path;
-                    _hunks.clear();
-                  });
-                  _loadDiff();
-                },
-                onSecondary: (at) => _fileMenu(f, at),
-                child: Row(
-                  children: [
-                    Checkbox(
-                      value: !_excluded.contains(f.path),
-                      onChanged: (v) => setState(() => v! ? _excluded.remove(f.path) : _excluded.add(f.path)),
-                    ),
-                    Expanded(
-                      child: Tooltip(
-                        message: f.path,
-                        waitDuration: const Duration(seconds: 1),
-                        child: Text(f.path, overflow: TextOverflow.ellipsis),
-                      ),
-                    ),
-                    const SizedBox(width: 4),
-                    statusIcon(f.status),
-                  ],
-                ),
-              );
+            itemBuilder: (_, i) => switch (items[i]) {
+              final String g => _groupHeader(g, rows.where((r) => r.$1 == g).toList()),
+              final (String, FileChange) r => _fileRow(r.$1, r.$2, indent: grouped),
+              _ => const SizedBox(),
             },
           ),
         ),
@@ -972,10 +1317,10 @@ class _ChangesPaneState extends State<ChangesPane> {
                 child: OutlinedButton(
                   onPressed: checked == 0
                       ? null
-                      : () => _shelve([
-                          for (final f in _files)
-                            if (!_excluded.contains(f.path)) f,
-                        ]),
+                      : () {
+                          final (whole, parts) = _marked();
+                          _shelve([...whole, ..._files.where((f) => parts.containsKey(f.path))], parts: parts);
+                        },
                   style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 10), minimumSize: const Size(0, 36)),
                   child: const Icon(Icons.inventory_2_outlined, size: 16),
                 ),

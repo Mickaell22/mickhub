@@ -307,7 +307,7 @@ Future<Account?> editAccount(BuildContext context, Account? current) async {
         )
       : null;
   for (final c in [label, gh, orgs, name, email]) {
-    c.dispose();
+    disposeAfterDialog(c);
   }
   return result;
 }

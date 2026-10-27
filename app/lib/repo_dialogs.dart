@@ -75,8 +75,8 @@ Future<String?> showNewRepoDialog(BuildContext context, Settings s) async {
     ),
   );
   final n = name.text.trim(), parent = dir.text.trim();
-  name.dispose();
-  dir.dispose();
+  disposeAfterDialog(name);
+  disposeAfterDialog(dir);
   if (ok != true || n.isEmpty || parent.isEmpty) return null;
   final path = '$parent${Platform.pathSeparator}$n';
   if (Directory(path).existsSync() && Directory(path).listSync().isNotEmpty) {
@@ -228,6 +228,6 @@ Future<String?> showPublishDialog(BuildContext context, Settings s, String repo)
       },
     ),
   );
-  name.dispose();
+  disposeAfterDialog(name);
   return url;
 }

@@ -861,7 +861,7 @@ class _ShellState extends State<Shell> {
       ),
     );
     final newName = ctrl.text.trim();
-    ctrl.dispose();
+    disposeAfterDialog(ctrl);
     if (ok != true || newName.isEmpty) return null;
     await s.update((x) {
       x.groupIcons = {...x.groupIcons}..remove(name);
@@ -1003,7 +1003,7 @@ class _ShellState extends State<Shell> {
       ),
     );
     final name = ctrl.text.trim();
-    ctrl.dispose();
+    disposeAfterDialog(ctrl);
     if (ok != true || name.isEmpty) return;
     try {
       await createBranch(repo, name, base);

@@ -173,3 +173,8 @@ PopupMenuItem<T> menuItem<T>(T value, IconData icon, String text, {bool danger =
     ),
   );
 }
+
+/// Libera el controlador de un diálogo que ya se cerró, pero después de su
+/// animación de cierre: si se libera al instante, el campo todavía lo usa y
+/// Flutter falla con `'_dependents.isEmpty'` (pantalla roja).
+void disposeAfterDialog(ChangeNotifier c) => Future.delayed(const Duration(seconds: 1), c.dispose);
