@@ -166,7 +166,7 @@ class _ShellState extends State<Shell> {
     3,
     (r) async {
       if (_syncing && r == _repo) return;
-      await backgroundFetch(r);
+      await backgroundFetch(r, env: await gitAuthEnv(accountFor(_origins[r], s.accounts, overrideId: s.repoAccounts[r]), _origins[r]));
       _lastFetch[r] = DateTime.now();
       await _loadSummary(r);
     },
@@ -259,17 +259,18 @@ class _ShellState extends State<Shell> {
     if (repo == null || b == null) return;
     setState(() => _syncing = true);
     try {
+      final env = await gitAuthEnv(_account, _origins[repo]); // la cuenta de GitHub del repo, no la activa en gh
       if (_origins[repo] == null) {
         if (mounted) setState(() => _syncing = false);
         return _publish();
       } else if (b.upstream == null) {
-        await git(['push', '-u', 'origin', 'HEAD'], cwd: repo);
+        await git(['push', '-u', 'origin', 'HEAD'], cwd: repo, env: env);
       } else if (b.behind > 0) {
-        await git([...?_account?.identityArgs, 'pull'], cwd: repo); // un pull puede crear un merge
+        await git([...?_account?.identityArgs, 'pull'], cwd: repo, env: env); // un pull puede crear un merge
       } else if (b.ahead > 0) {
-        await git(['push'], cwd: repo);
+        await git(['push'], cwd: repo, env: env);
       } else {
-        await git(['fetch', '--prune'], cwd: repo);
+        await git(['fetch', '--prune'], cwd: repo, env: env);
         _lastFetch[repo] = DateTime.now();
       }
     } on GitException catch (e) {

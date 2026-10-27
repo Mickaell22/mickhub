@@ -164,7 +164,8 @@ Future<BranchState> branchState(String repo) async => (await repoSummary(repo)).
 
 /// Fetch en segundo plano: sin ventanas de login (si la sesión venció, falla
 /// callado y el usuario se entera al sincronizar).
-Future<void> backgroundFetch(String repo) => git(['fetch', '--prune', '--quiet'], cwd: repo, env: {'GCM_INTERACTIVE': 'never'});
+Future<void> backgroundFetch(String repo, {Map<String, String> env = const {}}) =>
+    git(['fetch', '--prune', '--quiet'], cwd: repo, env: {'GCM_INTERACTIVE': 'never', ...env});
 
 Future<List<String>> localBranches(String repo) async =>
     LineSplitter.split(await git(['branch', '--format=%(refname:short)'], cwd: repo)).toList();

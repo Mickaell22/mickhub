@@ -74,4 +74,46 @@ void main() {
       'https://dev.azure.com/LuckyERP/ERP/_git/Erp_DB/commit/abc',
     );
   });
+
+  test('azureOrgFrom saca la organización de lo que se pegue', () {
+    for (final input in [
+      'miorg',
+      ' miorg ',
+      'https://dev.azure.com/miorg/Proyecto/_git/repo',
+      'https://yo@dev.azure.com/miorg/Proyecto/_git/repo',
+      'dev.azure.com/miorg',
+      'https://miorg.visualstudio.com/Proyecto',
+      'git@ssh.dev.azure.com:v3/miorg/Proyecto/repo',
+    ]) {
+      expect(azureOrgFrom(input), 'miorg', reason: input);
+    }
+  });
+
+  test('azureConnectionUser: email del usuario, null si es anónimo o no es JSON', () {
+    expect(
+      azureConnectionUser(
+        '{"authenticatedUser":{"providerDisplayName":"Yo","properties":{"Account":{"\$type":"System.String","\$value":"yo@empresa.com"}}}}',
+      ),
+      'yo@empresa.com',
+    );
+    expect(azureConnectionUser('{"authenticatedUser":{"providerDisplayName":"Yo"}}'), 'Yo');
+    expect(azureConnectionUser('{"authenticatedUser":{"providerDisplayName":"Anonymous"}}'), isNull);
+    expect(azureConnectionUser('<html>login</html>'), isNull);
+    expect(
+      azureConnectionUser(
+        '{"authenticatedUser":{"descriptor":"System:PublicAccess;aaaa","providerDisplayName":"X",'
+        '"properties":{"Account":{"\$value":"Anonymous"}}}}',
+      ),
+      isNull,
+    );
+  });
+
+  test('ghLoginCommand vuelve a la cuenta activa solo si es otra', () {
+    expect(
+      ghLoginCommand('Trabajo', active: 'Personal'),
+      'gh auth login --hostname github.com --git-protocol https --web && gh auth switch -u Personal',
+    );
+    expect(ghLoginCommand('Trabajo', active: 'trabajo'), 'gh auth login --hostname github.com --git-protocol https --web');
+    expect(ghLoginCommand('Trabajo'), 'gh auth login --hostname github.com --git-protocol https --web');
+  });
 }

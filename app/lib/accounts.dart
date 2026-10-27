@@ -114,6 +114,18 @@ Remote? parseRemote(String url) {
   return Remote(u.host.toLowerCase(), u.pathSegments.where((s) => s.isNotEmpty).toList(), user: user);
 }
 
+/// Organización de Azure DevOps a partir de lo que pegue el usuario: el nombre
+/// solo, o cualquier URL de Azure (de la web, de "Clonar", con usuario...).
+String azureOrgFrom(String input) {
+  final t = input.trim();
+  if (!t.contains('/') && !t.contains('.')) return t;
+  for (final url in [t, 'https://$t']) {
+    final r = parseRemote(url);
+    if (r != null && r.isAzure && r.owner != null) return r.owner!;
+  }
+  return t;
+}
+
 /// Lugar (GitHub o una organización de Azure) al que apunta un remoto.
 Target? targetOf(String? remoteUrl) {
   final r = remoteUrl == null ? null : parseRemote(remoteUrl);
@@ -168,7 +180,15 @@ class Session {
 Future<Map<String, String>?> credentialFor(Target t, {bool interactive = false}) async => (await _fill(t, interactive: interactive)).$1;
 
 /// `git credential fill` devolviendo también el error del helper, para mostrarlo.
+/// GitHub con gh es especial: `gh auth git-credential` entrega siempre la cuenta
+/// activa, así que el token de una cuenta concreta se le pide a gh directo.
 Future<(Map<String, String>?, String)> _fill(Target t, {bool interactive = false}) async {
+  if (t.provider == Provider.github && t.name.isNotEmpty && await githubUsesGh()) {
+    final login = await ghLogin(t.name);
+    final token = login == null ? null : await _gh(['auth', 'token', '--hostname', 'github.com', '--user', login]);
+    if (token == null || token.isEmpty) return (null, 'gh no tiene iniciada la cuenta ${t.name}');
+    return ({'protocol': 'https', 'host': 'github.com', 'username': login!, 'password': token}, '');
+  }
   try {
     final out = await git(['credential', 'fill'], stdin: t.credentialQuery(), env: {'GCM_INTERACTIVE': interactive ? 'auto' : 'never'});
     final kv = parseKeyValues(out);
@@ -187,7 +207,7 @@ Future<Session> checkTarget(Target t) async {
 
 Future<Session> _verify(Target t, String token) async {
   try {
-    final who = t.provider == Provider.github ? await _githubUser(token) : await _azureUser(token);
+    final who = t.provider == Provider.github ? await _githubUser(token) : await _azureUser(t.name, token);
     return who == null ? const Session(SessionState.expired) : Session(SessionState.ok, who);
   } catch (e) {
     return Session(SessionState.error, '$e');
@@ -209,17 +229,88 @@ Future<Session> checkSession(Account a) async {
   );
 }
 
+/// Por qué no se pudo iniciar sesión en un lugar. Si se arregla corriendo un
+/// comando (gh en Linux no tiene login con ventana), [command] lo trae listo
+/// para copiar.
+class LoginIssue {
+  const LoginIssue(this.message, {this.command});
+  final String message;
+  final String? command;
+}
+
+/// ¿GitHub pasa por gh (`gh auth git-credential`)? En ese caso no hay login con
+/// ventana: hay que correr `gh auth login` en una terminal.
+Future<bool> githubUsesGh() async {
+  try {
+    return (await git(['config', '--get-urlmatch', 'credential.helper', 'https://github.com'])).contains('gh auth');
+  } on GitException {
+    return false;
+  }
+}
+
+/// Corre gh sin el GH_TOKEN del entorno (si no, gh devuelve ese y no el de la
+/// cuenta pedida). Devuelve stdout, o null si gh no está o falló.
+Future<String?> _gh(List<String> args) async {
+  try {
+    final r = await Process.run('gh', args, environment: {'GH_TOKEN': '', 'GITHUB_TOKEN': ''});
+    return r.exitCode == 0 ? (r.stdout as String).trim() : null;
+  } on ProcessException {
+    return null;
+  }
+}
+
+/// Login exacto con que gh guardó la cuenta [user] (gh distingue mayúsculas y
+/// GitHub no: `Mickaell22Lucky` y `mickaell22Lucky` son la misma cuenta).
+Future<String?> ghLogin(String user) async {
+  final out = await _gh(['auth', 'status', '--json', 'hosts']);
+  if (out == null) return null;
+  try {
+    final hosts = ((jsonDecode(out) as Map)['hosts'] as Map)['github.com'] as List? ?? const [];
+    for (final h in hosts) {
+      final login = (h as Map)['login'] as String?;
+      if (login != null && login.toLowerCase() == user.toLowerCase()) return login;
+    }
+  } catch (_) {}
+  return null;
+}
+
+/// Variables de entorno para que git use la cuenta de GitHub de [a] en un repo
+/// de GitHub, aunque en gh esté activa otra (gh respeta GH_TOKEN). Vacío si no
+/// hace falta o no se puede.
+Future<Map<String, String>> gitAuthEnv(Account? a, String? originUrl) async {
+  final user = a?.githubUser;
+  if (user == null || user.isEmpty || targetOf(originUrl)?.provider != Provider.github) return const {};
+  final cred = await credentialFor(Target(Provider.github, user));
+  return cred == null ? const {} : {'GH_TOKEN': cred['password']!};
+}
+
+/// Comando para sumar la cuenta [user] a gh y volver después a la cuenta que
+/// estaba activa (gh deja activa la última que inició sesión, y git usa la
+/// activa en los remotos que no dicen usuario).
+String ghLoginCommand(String user, {String? active}) =>
+    'gh auth login --hostname github.com --git-protocol https --web'
+    '${active != null && active.isNotEmpty && active.toLowerCase() != user.toLowerCase() ? ' && gh auth switch -u $active' : ''}';
+
 /// Inicia sesión en un lugar: descarta la credencial vencida, deja que el
 /// helper muestre su login (navegador del GCM) y guarda lo que devuelva si la
 /// API la acepta. Devuelve null si quedó bien o, si no, por qué.
-Future<String?> loginTarget(Target t) async {
+Future<LoginIssue?> loginTarget(Target t) async {
   final old = await credentialFor(t);
   if (old != null && (await _verify(t, old['password']!)).state != SessionState.ok) {
     await git(['credential', 'reject'], stdin: _credentialText(old), okCodes: {0, 1});
   }
   final (fresh, err) = await _fill(t, interactive: true);
   if (fresh == null) {
-    return '${t.label}: el Git Credential Manager no devolvió ninguna credencial${err.isEmpty ? '' : ': $err'}';
+    if (t.provider == Provider.github && await githubUsesGh()) {
+      final active = (await credentialFor(const Target(Provider.github, '')))?['username'];
+      return LoginIssue(
+        'Para conectar GitHub ${t.name}, corre este comando en una terminal. Cuando se abra el navegador, entra con '
+        '${t.name} (si ahí ya tienes otra cuenta abierta, pega el código en github.com/login/device desde una ventana '
+        'privada). Al terminar, aprieta Verificar.',
+        command: ghLoginCommand(t.name, active: active),
+      );
+    }
+    return LoginIssue('${t.label}: el Git Credential Manager no devolvió ninguna credencial${err.isEmpty ? '' : ': $err'}');
   }
   final s = await _verify(t, fresh['password']!);
   if (s.state == SessionState.ok) {
@@ -230,18 +321,18 @@ Future<String?> loginTarget(Target t) async {
   // reusar esta en silencio.
   await git(['credential', 'reject'], stdin: _credentialText(fresh), okCodes: {0, 1});
   final who = fresh['username'] ?? 'la cuenta elegida';
-  return switch (t.provider) {
+  return LoginIssue(switch (t.provider) {
     Provider.azure =>
       '${t.label}: se entró como $who, pero Azure DevOps no la aceptó (${s.detail.isEmpty ? s.label.toLowerCase() : s.detail}). '
           'Vuelve a intentar con la cuenta que tiene acceso a la organización ${t.name}; si el GCM no te deja '
           'elegir, corre "git credential-manager azure-repos unbind ${t.name}" y prueba de nuevo.',
     Provider.github => '${t.label}: se entró como $who, pero GitHub no la aceptó (${s.detail.isEmpty ? s.label.toLowerCase() : s.detail}).',
-  };
+  });
 }
 
 /// Inicia sesión en todos los lugares de la cuenta que no estén conectados.
 /// Devuelve los errores (vacío si todo quedó bien).
-Future<List<String>> login(Account a) async => [
+Future<List<LoginIssue>> login(Account a) async => [
   for (final t in a.targets)
     if ((await checkTarget(t)).state != SessionState.ok) ?await loginTarget(t),
 ];
@@ -262,19 +353,41 @@ Future<String?> _githubUser(String token) async {
   return (jsonDecode(body) as Map)['login'];
 }
 
-/// Azure acepta el token del GCM como Bearer (OAuth) o un PAT como Basic; se
-/// prueban los dos. Un 203 con HTML es su forma de decir "no autorizado".
-Future<String?> _azureUser(String token) async {
-  final url = Uri.parse('https://app.vssps.visualstudio.com/_apis/profile/profiles/me?api-version=7.1');
+/// Quién es el token dentro de la organización [org] (null si no lo acepta).
+/// Se pregunta a la organización misma (`connectionData`) y no al servicio de
+/// perfiles: ese rechaza tokens válidos de empresas con acceso condicional,
+/// aunque sirvan para git. Azure acepta el token del GCM como Bearer (OAuth) o
+/// un PAT como Basic; se prueban los dos. Un 203 con HTML o un redirect al
+/// login son su forma de decir "no autorizado".
+Future<String?> _azureUser(String org, String token) async {
+  final url = Uri.parse('https://dev.azure.com/${Uri.encodeComponent(org)}/_apis/connectionData');
   for (final auth in azureAuthHeaders(token)) {
     final (status, body) = await _get(url, {'Authorization': auth});
     if (status == 200) {
-      final j = jsonDecode(body) as Map;
-      return j['emailAddress'] ?? j['displayName'];
+      final who = azureConnectionUser(body);
+      if (who != null) return who;
+      continue;
     }
+    if (status == 404) throw HttpException('No existe la organización "$org" en Azure DevOps');
     if (status != 401 && status != 203) throw HttpException('Azure DevOps respondió $status');
   }
   return null;
+}
+
+/// Email (o nombre) del usuario de una respuesta de `connectionData`; null si
+/// es anónimo o no es JSON.
+String? azureConnectionUser(String body) {
+  try {
+    final u = (jsonDecode(body) as Map)['authenticatedUser'] as Map?;
+    // Sin token Azure responde 200 igual, con un usuario anónimo de acceso público.
+    if (u == null || '${u['descriptor']}'.contains('PublicAccess')) return null;
+    final email = ((u['properties'] as Map?)?['Account'] as Map?)?[r'$value'] as String?;
+    final name = u['providerDisplayName'] as String?;
+    final who = email != null && email.isNotEmpty ? email : name;
+    return who == null || who.isEmpty || who.toLowerCase().contains('anonymous') ? null : who;
+  } on FormatException {
+    return null;
+  }
 }
 
 List<String> azureAuthHeaders(String token) => ['Bearer $token', 'Basic ${base64Encode(utf8.encode(':$token'))}'];

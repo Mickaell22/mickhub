@@ -1,6 +1,5 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'accounts.dart';
 import 'avatar.dart';
@@ -159,26 +158,30 @@ Future<void> showAccountsDialog(BuildContext context, Settings s, Map<String, Se
 /// Inicia sesión en [only] (o en todo lo vencido de la cuenta) y, si no se
 /// pudo, explica qué hacer.
 Future<Session> loginWithFeedback(BuildContext context, Account a, {Target? only}) async {
-  final errors = only == null ? await login(a) : [?await loginTarget(only)];
+  final issues = only == null ? await login(a) : [?await loginTarget(only)];
   final session = await checkSession(a);
-  if (errors.isNotEmpty && context.mounted) {
+  if (issues.isNotEmpty && context.mounted) {
+    // Si todo se arregla con un comando, no es un error: es un paso que falta.
+    final justSteps = issues.every((i) => i.command != null);
     await showDialog<void>(
       context: context,
       builder: (c) => AlertDialog(
-        title: const Row(
+        title: Row(
           children: [
-            Icon(Icons.error_outline, size: 18, color: Gh.deleted),
-            SizedBox(width: 8),
-            Text('No se pudo iniciar sesión', style: TextStyle(fontSize: 14)),
+            Icon(justSteps ? Icons.terminal : Icons.error_outline, size: 18, color: justSteps ? Gh.link : Gh.deleted),
+            const SizedBox(width: 8),
+            Text(justSteps ? 'Falta un paso en la terminal' : 'No se pudo iniciar sesión', style: const TextStyle(fontSize: 14)),
           ],
         ),
         content: SizedBox(
-          width: 520,
-          child: SelectableText(
-            [
-              ...errors,
-              if (!Platform.isWindows) 'En Linux con gh como helper no hay login con ventana: corre "gh auth login" en una terminal.',
-            ].join('\n\n'),
+          width: 560,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            spacing: Gh.sp * 1.5,
+            children: [
+              for (final i in issues) ...[SelectableText(i.message), if (i.command != null) _CommandBox(i.command!)],
+            ],
           ),
         ),
         actions: [FilledButton(onPressed: () => Navigator.pop(c), child: const Text('Entendido'))],
@@ -186,6 +189,47 @@ Future<Session> loginWithFeedback(BuildContext context, Account a, {Target? only
     );
   }
   return session;
+}
+
+/// Comando en letra de código con un botón para copiarlo.
+class _CommandBox extends StatefulWidget {
+  const _CommandBox(this.command);
+  final String command;
+
+  @override
+  State<_CommandBox> createState() => _CommandBoxState();
+}
+
+class _CommandBoxState extends State<_CommandBox> {
+  bool _copied = false;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.fromLTRB(Gh.sp, 4, 4, 4),
+    decoration: BoxDecoration(
+      color: Gh.box,
+      borderRadius: BorderRadius.circular(Gh.radius),
+      border: Border.all(color: Gh.border),
+    ),
+    child: Row(
+      children: [
+        Expanded(
+          child: SelectableText(
+            widget.command,
+            style: const TextStyle(fontFamily: 'monospace', fontSize: Gh.fontSizeSm),
+          ),
+        ),
+        TextButton.icon(
+          onPressed: () async {
+            await Clipboard.setData(ClipboardData(text: widget.command));
+            if (mounted) setState(() => _copied = true);
+          },
+          icon: Icon(_copied ? Icons.check : Icons.copy, size: 14),
+          label: Text(_copied ? 'Copiado' : 'Copiar'),
+        ),
+      ],
+    ),
+  );
 }
 
 /// Crea (con [current] null) o edita una cuenta.
@@ -236,7 +280,7 @@ Future<Account?> editAccount(BuildContext context, Account? current) async {
                 orgs,
                 'Organizaciones de Azure DevOps (opcional)',
                 icon: Icons.cloud_outlined,
-                help: 'La parte de dev.azure.com/<organización>. Varias separadas por coma.',
+                help: 'Pega la dirección de cualquier repo de Azure (o solo el nombre de la organización). Varias, separadas por coma.',
               ),
             ],
           ),
@@ -250,7 +294,7 @@ Future<Account?> editAccount(BuildContext context, Account? current) async {
   );
   final orgList = [
     for (final o in orgs.text.split(','))
-      if (o.trim().isNotEmpty) o.trim(),
+      if (o.trim().isNotEmpty) azureOrgFrom(o),
   ];
   final result = ok == true && label.text.trim().isNotEmpty
       ? Account(

@@ -107,7 +107,8 @@ class _CloneBodyState extends State<_CloneBody> {
     final target = '$dir${Platform.pathSeparator}${r.name}';
     setState(() => _cloning = r.fullName);
     try {
-      await git(['clone', r.cloneUrl, target]);
+      final src = _source;
+      await git(['clone', r.cloneUrl, target], env: src == null ? const {} : await gitAuthEnv(src.$1, r.cloneUrl));
       if (mounted) Navigator.pop(context, target);
     } on GitException catch (e) {
       _snack('No se pudo clonar ${r.fullName}: ${e.message}');
