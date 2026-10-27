@@ -124,17 +124,47 @@ class BranchState {
   final int ahead, behind;
 }
 
-Future<BranchState> branchState(String repo) async {
-  final name = (await git(['symbolic-ref', '--short', '-q', 'HEAD'], cwd: repo, okCodes: {0, 1})).trim();
-  final branch = name.isEmpty ? 'HEAD desacoplado' : name;
-  try {
-    final up = (await git(['rev-parse', '--abbrev-ref', '@{upstream}'], cwd: repo)).trim();
-    final counts = (await git(['rev-list', '--left-right', '--count', 'HEAD...@{upstream}'], cwd: repo)).trim().split(RegExp(r'\s+'));
-    return BranchState(branch, upstream: up, ahead: int.parse(counts[0]), behind: int.parse(counts[1]));
-  } on GitException {
-    return BranchState(branch);
-  }
+/// Rama y cantidad de archivos cambiados, en una sola llamada a git. Es lo que
+/// muestra la lista de repos (punto de cambios, ↓↑) y la barra; barato a
+/// propósito porque se pide para todos los repos.
+class RepoSummary {
+  const RepoSummary(this.branch, this.changes);
+  final BranchState branch;
+  final int changes;
 }
+
+/// Lee la salida de `git status --porcelain=v2 --branch`.
+RepoSummary parseSummary(String out) {
+  String? head, upstream;
+  int? ahead, behind;
+  var changes = 0;
+  for (final l in LineSplitter.split(out)) {
+    if (l.startsWith('# branch.head ')) {
+      head = l.substring(14);
+    } else if (l.startsWith('# branch.upstream ')) {
+      upstream = l.substring(18);
+    } else if (l.startsWith('# branch.ab ')) {
+      final ab = l.substring(12).split(' ');
+      ahead = int.parse(ab[0].substring(1));
+      behind = int.parse(ab[1].substring(1));
+    } else if (l.isNotEmpty && !l.startsWith('#')) {
+      changes++;
+    }
+  }
+  final name = head == null || head == '(detached)' ? 'HEAD desacoplado' : head;
+  // Sin línea `branch.ab` el upstream no existe en el remoto (p. ej. lo
+  // borraron): se trata como sin upstream, así sincronizar lo vuelve a publicar.
+  if (ahead == null) return RepoSummary(BranchState(name), changes);
+  return RepoSummary(BranchState(name, upstream: upstream, ahead: ahead, behind: behind!), changes);
+}
+
+Future<RepoSummary> repoSummary(String repo) async => parseSummary(await git(['status', '--porcelain=v2', '--branch'], cwd: repo));
+
+Future<BranchState> branchState(String repo) async => (await repoSummary(repo)).branch;
+
+/// Fetch en segundo plano: sin ventanas de login (si la sesión venció, falla
+/// callado y el usuario se entera al sincronizar).
+Future<void> backgroundFetch(String repo) => git(['fetch', '--prune', '--quiet'], cwd: repo, env: {'GCM_INTERACTIVE': 'never'});
 
 Future<List<String>> localBranches(String repo) async =>
     LineSplitter.split(await git(['branch', '--format=%(refname:short)'], cwd: repo)).toList();

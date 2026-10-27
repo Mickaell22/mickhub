@@ -83,4 +83,15 @@ void main() {
     expect(editorArgs('subl', '/r', file: 'a.dart', line: 3), ['/r', '/r/a.dart']);
     expect(editorArgs('code', '/r', file: 'a.dart'), ['/r', '/r/a.dart']);
   });
+
+  test('parseSummary: rama, ↓↑, cambios y upstream borrado', () {
+    final s = parseSummary(
+      '# branch.oid abc\n# branch.head Mmoran\n# branch.upstream origin/Mmoran\n# branch.ab +2 -3\n'
+      '1 .M N... 100644 100644 100644 a b lib/a.dart\n? nuevo.txt\n',
+    );
+    expect((s.branch.name, s.branch.upstream, s.branch.ahead, s.branch.behind, s.changes), ('Mmoran', 'origin/Mmoran', 2, 3, 2));
+    final gone = parseSummary('# branch.oid abc\n# branch.head main\n# branch.upstream origin/main\n');
+    expect(gone.branch.upstream, isNull);
+    expect(parseSummary('# branch.oid (initial)\n# branch.head (detached)\n').branch.name, 'HEAD desacoplado');
+  });
 }

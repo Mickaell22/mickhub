@@ -1,11 +1,13 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'accounts.dart';
 import 'accounts_ui.dart';
+import 'avatar.dart';
 import 'clone_dialog.dart';
 import 'git.dart';
 import 'panes.dart';
@@ -19,6 +21,7 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final settings = Settings();
   await settings.load();
+  avatarDir = Directory('${settings.dataDir.path}${Platform.pathSeparator}fotos');
   runApp(
     MaterialApp(
       title: 'MickHub',
@@ -57,6 +60,8 @@ class _ShellState extends State<Shell> {
   int _tick = 0;
   bool _syncing = false;
   final _lastFetch = <String, DateTime>{};
+  final _summaries = <String, RepoSummary>{}; // ruta -> rama, ↓↑ y cambios (lista y barra)
+  Timer? _fetchTimer;
   late final AppLifecycleListener _lifecycle;
   StreamSubscription<FileSystemEvent>? _settingsWatch;
   Release? _update; // versión nueva publicada, si hay
@@ -73,6 +78,8 @@ class _ShellState extends State<Shell> {
       onResume: () {
         _refresh();
         _checkSessions();
+        final last = _lastFetch[_repo];
+        if (_repo != null && (last == null || DateTime.now().difference(last) > const Duration(minutes: 2))) _fetchAll([_repo!]);
       },
     );
     _checkSessions();
@@ -80,6 +87,8 @@ class _ShellState extends State<Shell> {
     // Busca versiones nuevas al abrir y cada 6 h (solo en builds de release).
     _checkUpdate();
     _updateTimer = Timer.periodic(const Duration(hours: 6), (_) => _checkUpdate());
+    // Como Desktop: fetch en segundo plano para saber si hay algo que traer.
+    _fetchTimer = Timer.periodic(const Duration(minutes: 10), (_) => _fetchAll(_repos));
     // Si alguien edita el JSON de ajustes desde fuera (Claude Code clonando o
     // agrupando repos), se recarga la lista sin reiniciar la app.
     _settingsWatch = s.watch(() {
@@ -97,6 +106,7 @@ class _ShellState extends State<Shell> {
     _lifecycle.dispose();
     _settingsWatch?.cancel();
     _updateTimer?.cancel();
+    _fetchTimer?.cancel();
     _reloadDebounce?.cancel();
     super.dispose();
   }
@@ -116,13 +126,57 @@ class _ShellState extends State<Shell> {
     }
     final current = repos.contains(s.currentRepo) ? s.currentRepo : (repos.isEmpty ? null : repos.first);
     if (current != null && (reopen || current != _repo)) await _open(current);
+    await _eachLimited(repos, 6, _loadSummary);
+    if (reopen) await _fetchAll(repos);
   }
+
+  /// Corre [f] sobre [items] con a lo sumo [n] a la vez (git en paralelo sin
+  /// lanzar cien procesos juntos). Los errores de uno no frenan al resto.
+  static Future<void> _eachLimited(List<String> items, int n, Future<void> Function(String) f) async {
+    final it = items.iterator;
+    Future<void> worker() async {
+      while (it.moveNext()) {
+        final x = it.current;
+        try {
+          await f(x);
+        } catch (_) {}
+      }
+    }
+
+    await Future.wait([for (var i = 0; i < n; i++) worker()]);
+  }
+
+  Future<void> _loadSummary(String repo) async {
+    if (!Directory(repo).existsSync()) return;
+    final sum = await repoSummary(repo);
+    if (!mounted) return;
+    setState(() {
+      _summaries[repo] = sum;
+      if (repo == _repo) _branch = sum.branch;
+    });
+  }
+
+  /// Fetch callado de los repos con remoto; al terminar cada uno se actualizan
+  /// sus ↓↑. Se salta el repo abierto si se está sincronizando.
+  Future<void> _fetchAll(List<String> repos) => _eachLimited(
+    [
+      for (final r in repos)
+        if (_origins[r] != null) r,
+    ],
+    3,
+    (r) async {
+      if (_syncing && r == _repo) return;
+      await backgroundFetch(r);
+      _lastFetch[r] = DateTime.now();
+      await _loadSummary(r);
+    },
+  );
 
   Future<void> _open(String repo) async {
     _editorFocus = null;
     setState(() {
       _repo = repo;
-      _branch = null;
+      _branch = _summaries[repo]?.branch; // lo último conocido, para no mostrar la barra vacía
       _foldout = Foldout.none;
     });
     if (s.currentRepo != repo) await s.update((x) => x.currentRepo = repo);
@@ -133,8 +187,13 @@ class _ShellState extends State<Shell> {
     final repo = _repo;
     if (repo == null || !Directory(repo).existsSync()) return;
     try {
-      final b = await branchState(repo);
-      if (mounted && repo == _repo) setState(() => _branch = b);
+      final sum = await repoSummary(repo);
+      if (mounted) {
+        setState(() {
+          _summaries[repo] = sum;
+          if (repo == _repo) _branch = sum.branch;
+        });
+      }
     } on GitException catch (e) {
       _snack(e.message);
     }
@@ -852,11 +911,20 @@ class _ShellState extends State<Shell> {
       context: context,
       position: RelativeRect.fromLTRB(at.dx, at.dy, at.dx, at.dy),
       items: [
-        menuItem('edit', Icons.edit_outlined, 'Editar grupo (nombre, ícono, repos)…'),
-        const PopupMenuDivider(),
-        menuItem('delete', Icons.delete_outline, 'Eliminar grupo', danger: true),
+        menuItem('expand', Icons.unfold_more, 'Expandir todo'),
+        menuItem('collapse', Icons.unfold_less, 'Contraer todo'),
+        // "Sin grupo" ('') no se edita ni se borra.
+        if (group.isNotEmpty) ...[
+          const PopupMenuDivider(),
+          menuItem('edit', Icons.edit_outlined, 'Editar grupo (nombre, ícono, repos)…'),
+          const PopupMenuDivider(),
+          menuItem('delete', Icons.delete_outline, 'Eliminar grupo', danger: true),
+        ],
       ],
     );
+    if (action == 'expand') await s.update((x) => x.collapsedGroups = []);
+    if (action == 'collapse') await s.update((x) => x.collapsedGroups = [...x.allGroups(), '']);
+    if (action == 'expand' || action == 'collapse') setState(() {});
     if (action == 'edit') await _editGroup(group);
     if (action == 'delete') {
       // Los repos no se tocan: solo pasan a "Sin grupo".
@@ -1115,6 +1183,41 @@ class _ShellState extends State<Shell> {
     );
   }
 
+  /// Como la lista de Desktop: punto si hay cambios sin commitear y ↓↑ si hay
+  /// commits para traer o subir.
+  Widget? _repoBadges(String repo) {
+    final sum = _summaries[repo];
+    if (sum == null) return null;
+    final b = sum.branch;
+    if (sum.changes == 0 && b.ahead == 0 && b.behind == 0) return null;
+    Widget count(IconData icon, int n) => Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 12, color: Gh.textSecondary),
+        Text(
+          '$n',
+          style: const TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
+        ),
+      ],
+    );
+    return Tooltip(
+      message: [
+        if (sum.changes > 0) sum.changes == 1 ? '1 archivo cambiado' : '${sum.changes} archivos cambiados',
+        if (b.behind > 0) '${b.behind} para traer',
+        if (b.ahead > 0) '${b.ahead} para subir',
+      ].join(' · '),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        spacing: 4,
+        children: [
+          if (b.behind > 0) count(Icons.arrow_downward, b.behind),
+          if (b.ahead > 0) count(Icons.arrow_upward, b.ahead),
+          if (sum.changes > 0) const Icon(Icons.circle, size: 8, color: Gh.link),
+        ],
+      ),
+    );
+  }
+
   Widget _repoList() => _FilterList(
     items: _repos,
     label: repoName,
@@ -1125,7 +1228,12 @@ class _ShellState extends State<Shell> {
     allGroups: s.allGroups(),
     groupIcon: (g) => groupIcon(s.groupIcons[g]),
     onGroupSecondary: _groupMenu,
+    collapsed: s.collapsedGroups.toSet(),
+    onCollapsed: (c) => s.update((x) => x.collapsedGroups = c.toList()),
+    groupFilter: s.groupFilter.toSet(),
+    onGroupFilter: (f) => s.update((x) => x.groupFilter = f.toList()),
     onSecondary: _repoMenu,
+    trailing: _repoBadges,
     hint: 'Filtrar',
     emptyText: s.reposDir == null ? 'No hay repositorios. Clona uno o agrega uno local.' : 'No hay repositorios en ${s.reposDir}.',
     action: Builder(
@@ -1249,6 +1357,11 @@ class _FilterList extends StatefulWidget {
     this.groupIcon,
     this.onGroupSecondary,
     this.onSecondary,
+    this.trailing,
+    this.collapsed = const {},
+    this.onCollapsed,
+    this.groupFilter = const {},
+    this.onGroupFilter,
   });
   final List<String> items;
   final String Function(String) label;
@@ -1262,35 +1375,66 @@ class _FilterList extends StatefulWidget {
   final IconData Function(String group)? groupIcon;
   final void Function(String group, Offset at)? onGroupSecondary;
   final void Function(String item, Offset at)? onSecondary;
+  final Widget? Function(String item)? trailing;
+
+  /// Grupos contraídos ('' = sin grupo) y grupos marcados en el filtro (vacío =
+  /// todos). Los guarda quien usa la lista, para que se recuerden.
+  final Set<String> collapsed, groupFilter;
+  final ValueChanged<Set<String>>? onCollapsed, onGroupFilter;
 
   @override
   State<_FilterList> createState() => _FilterListState();
 }
 
 class _FilterListState extends State<_FilterList> {
+  @override
+  void didUpdateWidget(_FilterList old) {
+    super.didUpdateWidget(old);
+    // "Expandir/Contraer todo" cambia los contraídos desde fuera.
+    if (!setEquals(old.collapsed, widget.collapsed)) {
+      _collapsed
+        ..clear()
+        ..addAll(widget.collapsed);
+    }
+  }
+
+  void _toggle(String group) {
+    setState(() => _collapsed.contains(group) ? _collapsed.remove(group) : _collapsed.add(group));
+    widget.onCollapsed?.call({..._collapsed});
+  }
+
+  void _setFilter(Set<String> f) {
+    setState(() => _filter = f);
+    widget.onGroupFilter?.call({...f});
+  }
+
   String _q = '';
-  String? _group;
+  late final Set<String> _collapsed = {...widget.collapsed};
+  late Set<String> _filter = {...widget.groupFilter};
 
   @override
   Widget build(BuildContext context) {
     final groupOf = widget.group ?? (_) => null;
     final q = _q.toLowerCase();
+    final groups = {...widget.allGroups, for (final i in widget.items) ?groupOf(i)}.toList()..sort();
+    _filter.removeWhere((g) => !groups.contains(g)); // un grupo borrado no debe dejar la lista vacía
     final shown = widget.items.where((i) {
-      if (_group != null && groupOf(i) != _group) return false;
+      if (_filter.isNotEmpty && !_filter.contains(groupOf(i))) return false;
       return '${widget.label(i)} ${groupOf(i) ?? ''}'.toLowerCase().contains(q);
     }).toList();
-    final groups = {...widget.allGroups, for (final i in widget.items) ?groupOf(i)}.toList()..sort();
 
     // Encabezados de grupo (los con nombre primero, alfabéticos) y sus elementos.
-    final rows = <Object>[]; // String = elemento, (String,) = encabezado
+    final rows = <Object>[]; // String = elemento, (título, grupo, cantidad) = encabezado
     final byGroup = <String, List<String>>{};
     for (final i in shown) {
       (byGroup[groupOf(i) ?? ''] ??= []).add(i);
     }
     final keys = byGroup.keys.toList()..sort((a, b) => a.isEmpty ? 1 : (b.isEmpty ? -1 : a.compareTo(b)));
+    // Al buscar se muestra todo lo que coincide, aunque su grupo esté contraído.
+    final searching = q.isNotEmpty;
     for (final k in keys) {
-      rows.add((k.isEmpty ? (groups.isEmpty ? widget.header : 'Sin grupo') : k,));
-      rows.addAll(byGroup[k]!);
+      rows.add((k.isEmpty ? (groups.isEmpty ? widget.header : 'Sin grupo') : k, k, byGroup[k]!.length));
+      if (searching || groups.isEmpty || !_collapsed.contains(k)) rows.addAll(byGroup[k]!);
     }
 
     return Column(
@@ -1320,15 +1464,25 @@ class _FilterListState extends State<_FilterList> {
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: Gh.sp),
               children: [
-                for (final g in [null, ...groups])
+                Padding(
+                  padding: const EdgeInsets.only(right: 6),
+                  child: ChoiceChip(
+                    label: const Text('Todos', style: TextStyle(fontSize: Gh.fontSizeSm)),
+                    selected: _filter.isEmpty,
+                    visualDensity: VisualDensity.compact,
+                    onSelected: (_) => _setFilter({}),
+                  ),
+                ),
+                // Se pueden marcar varios grupos a la vez.
+                for (final g in groups)
                   Padding(
                     padding: const EdgeInsets.only(right: 6),
-                    child: ChoiceChip(
-                      avatar: g == null || widget.groupIcon == null ? null : Icon(widget.groupIcon!(g), size: 14),
-                      label: Text(g ?? 'Todos', style: const TextStyle(fontSize: Gh.fontSizeSm)),
-                      selected: _group == g,
+                    child: FilterChip(
+                      avatar: _filter.contains(g) || widget.groupIcon == null ? null : Icon(widget.groupIcon!(g), size: 14),
+                      label: Text(g, style: const TextStyle(fontSize: Gh.fontSizeSm)),
+                      selected: _filter.contains(g),
                       visualDensity: VisualDensity.compact,
-                      onSelected: (_) => setState(() => _group = g),
+                      onSelected: (on) => _setFilter(on ? {..._filter, g} : ({..._filter}..remove(g))),
                     ),
                   ),
               ],
@@ -1345,22 +1499,35 @@ class _FilterListState extends State<_FilterList> {
                   itemExtent: Gh.rowHeight,
                   itemBuilder: (_, i) {
                     final r = rows[i];
-                    if (r is (String,)) {
-                      final named = groups.contains(r.$1);
-                      return GestureDetector(
-                        onSecondaryTapUp: named && widget.onGroupSecondary != null
-                            ? (d) => widget.onGroupSecondary!(r.$1, d.globalPosition)
+                    if (r is (String, String, int)) {
+                      final (title, key, count) = r;
+                      final named = groups.contains(key);
+                      final foldable = groups.isNotEmpty && !searching;
+                      final open = !_collapsed.contains(key);
+                      return InkWell(
+                        onTap: foldable ? () => _toggle(key) : null,
+                        onSecondaryTapUp: groups.isNotEmpty && widget.onGroupSecondary != null
+                            ? (d) => widget.onGroupSecondary!(key, d.globalPosition)
                             : null,
                         child: Container(
                           alignment: Alignment.bottomLeft,
                           padding: const EdgeInsets.fromLTRB(Gh.sp, 0, Gh.sp, 4),
                           child: Row(
                             children: [
+                              if (foldable) ...[
+                                Icon(open ? Icons.expand_more : Icons.chevron_right, size: 16, color: Gh.textSecondary),
+                                const SizedBox(width: 2),
+                              ],
                               if (named && widget.groupIcon != null) ...[
-                                Icon(widget.groupIcon!(r.$1), size: 14, color: Gh.link),
+                                Icon(widget.groupIcon!(key), size: 14, color: Gh.link),
                                 const SizedBox(width: 6),
                               ],
-                              Text(r.$1, style: const TextStyle(fontWeight: FontWeight.w600)),
+                              Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
+                              if (foldable && !open)
+                                Text(
+                                  '  $count',
+                                  style: const TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
+                                ),
                             ],
                           ),
                         ),
@@ -1376,7 +1543,8 @@ class _FilterListState extends State<_FilterList> {
                           Icon(widget.icon, size: 14, color: Gh.textSecondary),
                           const SizedBox(width: Gh.sp),
                           Expanded(child: Text(widget.label(item), overflow: TextOverflow.ellipsis)),
-                          if (item == widget.selected) const Icon(Icons.check, size: 14),
+                          ?widget.trailing?.call(item),
+                          if (item == widget.selected) ...[const SizedBox(width: 6), const Icon(Icons.check, size: 14)],
                         ],
                       ),
                     );

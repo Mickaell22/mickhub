@@ -165,13 +165,16 @@ class Session {
 
 /// Credencial de un lugar. Sin [interactive] no abre ventanas de login (el GCM
 /// no pregunta); con él, deja que el helper muestre su login.
-Future<Map<String, String>?> credentialFor(Target t, {bool interactive = false}) async {
+Future<Map<String, String>?> credentialFor(Target t, {bool interactive = false}) async => (await _fill(t, interactive: interactive)).$1;
+
+/// `git credential fill` devolviendo también el error del helper, para mostrarlo.
+Future<(Map<String, String>?, String)> _fill(Target t, {bool interactive = false}) async {
   try {
     final out = await git(['credential', 'fill'], stdin: t.credentialQuery(), env: {'GCM_INTERACTIVE': interactive ? 'auto' : 'never'});
     final kv = parseKeyValues(out);
-    return kv['password'] == null ? null : kv;
-  } on GitException {
-    return null;
+    return (kv['password'] == null ? null : kv, '');
+  } on GitException catch (e) {
+    return (null, e.message);
   }
 }
 
@@ -179,8 +182,12 @@ Future<Map<String, String>?> credentialFor(Target t, {bool interactive = false})
 Future<Session> checkTarget(Target t) async {
   final cred = await credentialFor(t);
   if (cred == null) return const Session(SessionState.missing);
+  return _verify(t, cred['password']!);
+}
+
+Future<Session> _verify(Target t, String token) async {
   try {
-    final who = t.provider == Provider.github ? await _githubUser(cred['password']!) : await _azureUser(cred['password']!);
+    final who = t.provider == Provider.github ? await _githubUser(token) : await _azureUser(token);
     return who == null ? const Session(SessionState.expired) : Session(SessionState.ok, who);
   } catch (e) {
     return Session(SessionState.error, '$e');
@@ -203,26 +210,41 @@ Future<Session> checkSession(Account a) async {
 }
 
 /// Inicia sesión en un lugar: descarta la credencial vencida, deja que el
-/// helper muestre su login (navegador del GCM) y guarda lo que devuelva.
-Future<bool> loginTarget(Target t) async {
+/// helper muestre su login (navegador del GCM) y guarda lo que devuelva si la
+/// API la acepta. Devuelve null si quedó bien o, si no, por qué.
+Future<String?> loginTarget(Target t) async {
   final old = await credentialFor(t);
-  if (old != null && (await checkTarget(t)).state != SessionState.ok) {
+  if (old != null && (await _verify(t, old['password']!)).state != SessionState.ok) {
     await git(['credential', 'reject'], stdin: _credentialText(old), okCodes: {0, 1});
   }
-  final fresh = await credentialFor(t, interactive: true);
-  if (fresh == null) return false;
-  await git(['credential', 'approve'], stdin: _credentialText(fresh), okCodes: {0, 1});
-  return (await checkTarget(t)).state == SessionState.ok;
+  final (fresh, err) = await _fill(t, interactive: true);
+  if (fresh == null) {
+    return '${t.label}: el Git Credential Manager no devolvió ninguna credencial${err.isEmpty ? '' : ': $err'}';
+  }
+  final s = await _verify(t, fresh['password']!);
+  if (s.state == SessionState.ok) {
+    await git(['credential', 'approve'], stdin: _credentialText(fresh), okCodes: {0, 1});
+    return null;
+  }
+  // Se descarta para que el próximo intento deje elegir otra cuenta en vez de
+  // reusar esta en silencio.
+  await git(['credential', 'reject'], stdin: _credentialText(fresh), okCodes: {0, 1});
+  final who = fresh['username'] ?? 'la cuenta elegida';
+  return switch (t.provider) {
+    Provider.azure =>
+      '${t.label}: se entró como $who, pero Azure DevOps no la aceptó (${s.detail.isEmpty ? s.label.toLowerCase() : s.detail}). '
+          'Vuelve a intentar con la cuenta que tiene acceso a la organización ${t.name}; si el GCM no te deja '
+          'elegir, corre "git credential-manager azure-repos unbind ${t.name}" y prueba de nuevo.',
+    Provider.github => '${t.label}: se entró como $who, pero GitHub no la aceptó (${s.detail.isEmpty ? s.label.toLowerCase() : s.detail}).',
+  };
 }
 
 /// Inicia sesión en todos los lugares de la cuenta que no estén conectados.
-Future<bool> login(Account a) async {
-  var ok = true;
-  for (final t in a.targets) {
-    if ((await checkTarget(t)).state != SessionState.ok) ok = await loginTarget(t) && ok;
-  }
-  return ok;
-}
+/// Devuelve los errores (vacío si todo quedó bien).
+Future<List<String>> login(Account a) async => [
+  for (final t in a.targets)
+    if ((await checkTarget(t)).state != SessionState.ok) ?await loginTarget(t),
+];
 
 String _credentialText(Map<String, String> kv) => '${kv.entries.map((e) => '${e.key}=${e.value}').join('\n')}\n\n';
 

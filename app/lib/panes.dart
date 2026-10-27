@@ -160,6 +160,11 @@ class ChangesPane extends StatefulWidget {
   State<ChangesPane> createState() => _ChangesPaneState();
 }
 
+/// Lo último que se leyó de cada repo, para mostrarlo al instante al volver a
+/// él mientras se relee de git.
+typedef _Snapshot = (List<FileChange>, List<Protected>, List<Shelf>, String?, MergeState);
+final _snapshots = <String, _Snapshot>{};
+
 class _ChangesPaneState extends State<ChangesPane> {
   List<FileChange> _files = [];
   List<Protected> _protected = [];
@@ -180,6 +185,8 @@ class _ChangesPaneState extends State<ChangesPane> {
   void initState() {
     super.initState();
     _summary.addListener(() => setState(() {}));
+    final snap = _snapshots[widget.repo];
+    if (snap != null) _apply(snap);
     _load();
   }
 
@@ -196,25 +203,47 @@ class _ChangesPaneState extends State<ChangesPane> {
     super.dispose();
   }
 
+  bool _loading = false, _reload = false;
+
+  /// Relee todo de git (en paralelo). Si llega otro pedido mientras tanto, se
+  /// hace una sola vuelta más al terminar en vez de dos lecturas pisándose.
   Future<void> _load() async {
-    final files = await status(widget.repo);
-    final locked = await protectedFiles(widget.repo);
-    final shelved = await shelves(widget.repo);
-    final identity = await gitIdentity(widget.repo);
-    final merge = await mergeState(widget.repo);
-    if (!mounted) return;
-    setState(() {
-      _merge = merge;
-      _files = files;
-      _protected = locked;
-      _shelves = shelved;
-      _gitIdentity = identity;
-      _excluded.retainAll(files.map((f) => f.path));
-      if (!files.any((f) => f.path == _selected)) {
-        _selected = files.isEmpty ? null : files.first.path;
-      }
-    });
+    if (_loading) {
+      _reload = true;
+      return;
+    }
+    _loading = true;
+    try {
+      do {
+        _reload = false;
+        final r = await (
+          status(widget.repo),
+          protectedFiles(widget.repo),
+          shelves(widget.repo),
+          gitIdentity(widget.repo),
+          mergeState(widget.repo),
+        ).wait;
+        _snapshots[widget.repo] = r;
+        if (!mounted) return;
+        setState(() => _apply(r));
+      } while (_reload);
+    } finally {
+      _loading = false;
+    }
     _loadDiff();
+  }
+
+  void _apply(_Snapshot r) {
+    final (files, locked, shelved, identity, merge) = r;
+    _merge = merge;
+    _files = files;
+    _protected = locked;
+    _shelves = shelved;
+    _gitIdentity = identity;
+    _excluded.retainAll(files.map((f) => f.path));
+    if (!files.any((f) => f.path == _selected)) {
+      _selected = files.isEmpty ? null : files.first.path;
+    }
   }
 
   Future<void> _loadDiff() async {

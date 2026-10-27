@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import 'accounts.dart';
@@ -157,16 +159,29 @@ Future<void> showAccountsDialog(BuildContext context, Settings s, Map<String, Se
 /// Inicia sesión en [only] (o en todo lo vencido de la cuenta) y, si no se
 /// pudo, explica qué hacer.
 Future<Session> loginWithFeedback(BuildContext context, Account a, {Target? only}) async {
-  final ok = only == null ? await login(a) : await loginTarget(only);
+  final errors = only == null ? await login(a) : [?await loginTarget(only)];
   final session = await checkSession(a);
-  if (!ok && context.mounted) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        duration: Duration(seconds: 8),
-        content: Text(
-          'No se pudo iniciar sesión. En Windows revisa que el Git Credential Manager esté instalado; '
-          'en Linux con gh, corre "gh auth login" en una terminal y vuelve a verificar.',
+  if (errors.isNotEmpty && context.mounted) {
+    await showDialog<void>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.error_outline, size: 18, color: Gh.deleted),
+            SizedBox(width: 8),
+            Text('No se pudo iniciar sesión', style: TextStyle(fontSize: 14)),
+          ],
         ),
+        content: SizedBox(
+          width: 520,
+          child: SelectableText(
+            [
+              ...errors,
+              if (!Platform.isWindows) 'En Linux con gh como helper no hay login con ventana: corre "gh auth login" en una terminal.',
+            ].join('\n\n'),
+          ),
+        ),
+        actions: [FilledButton(onPressed: () => Navigator.pop(c), child: const Text('Entendido'))],
       ),
     );
   }

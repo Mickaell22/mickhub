@@ -29,6 +29,12 @@ class Settings extends ChangeNotifier {
   /// aunque todavía no tenga repos.
   Map<String, String> groupIcons = {};
 
+  /// Grupos contraídos en la lista de repos ('' = "Sin grupo").
+  List<String> collapsedGroups = [];
+
+  /// Grupos marcados en el filtro de la lista de repos (vacío = todos).
+  List<String> groupFilter = [];
+
   /// Cuentas (GitHub, organizaciones de Azure DevOps) y con qué firman commits.
   List<Account> accounts = [];
 
@@ -73,6 +79,8 @@ class Settings extends ChangeNotifier {
     groupIcons = Map<String, String>.from(j['groupIcons'] ?? {});
     accounts = [for (final a in j['accounts'] ?? const []) Account.fromJson(a)];
     repoAccounts = Map<String, String>.from(j['repoAccounts'] ?? {});
+    collapsedGroups = List<String>.from(j['collapsedGroups'] ?? []);
+    groupFilter = List<String>.from(j['groupFilter'] ?? []);
   }
 
   Future<void> update(void Function(Settings) change) async {
@@ -91,6 +99,8 @@ class Settings extends ChangeNotifier {
         'groupIcons': groupIcons,
         'accounts': [for (final a in accounts) a.toJson()],
         'repoAccounts': repoAccounts,
+        'collapsedGroups': collapsedGroups,
+        'groupFilter': groupFilter,
       }),
     );
   }
@@ -98,7 +108,10 @@ class Settings extends ChangeNotifier {
   /// Todos los grupos: los creados y los que aparecen asignados a algún repo.
   List<String> allGroups() => ({...groupIcons.keys, ...groups.values}.toList()..sort());
 
-  Trash get trash => Trash(Directory('${_file!.parent.path}${Platform.pathSeparator}papelera'));
+  /// Carpeta de datos de la app (la de este JSON).
+  Directory get dataDir => _file!.parent;
+
+  Trash get trash => Trash(Directory('${dataDir.path}${Platform.pathSeparator}papelera'));
 
   /// Repos locales: los de [reposDir] (un nivel) más los agregados a mano.
   List<String> localRepos() {

@@ -1,3 +1,8 @@
+import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
+
+import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
 
 import 'theme.dart';
@@ -13,9 +18,43 @@ String avatarForEmail(String email, {int size = 64}) {
 
 String avatarForUser(String user, {int size = 64}) => 'https://avatars.githubusercontent.com/${Uri.encodeComponent(user)}?s=$size';
 
+/// Carpeta donde se guardan las fotos bajadas (la pone `main`). Así no se
+/// vuelven a pedir a GitHub cada vez que se abre la app ni se ven parpadear.
+Directory? avatarDir;
+
+/// Las fotos se renuevan cada tanto por si el usuario cambió la suya.
+const avatarMaxAge = Duration(days: 7);
+
+final _ready = <String, Uint8List?>{}; // URL -> bytes ya leídos (null = no hay foto)
+final _pending = <String, Future<Uint8List?>>{};
+
+/// Bytes de la foto de [url]: de memoria, del disco o bajándola (una sola vez
+/// por URL y por sesión). Sin internet usa la copia vieja si existe.
+Future<Uint8List?> avatarBytes(String url) => _pending[url] ??= () async {
+  final dir = avatarDir;
+  final file = dir == null ? null : File('${dir.path}${Platform.pathSeparator}${sha1.convert(utf8.encode(url))}');
+  if (file != null && file.existsSync() && DateTime.now().difference(file.lastModifiedSync()) < avatarMaxAge) {
+    return _ready[url] = await file.readAsBytes();
+  }
+  final client = HttpClient()..connectionTimeout = const Duration(seconds: 10);
+  try {
+    final res = await (await client.getUrl(Uri.parse(url))).close();
+    if (res.statusCode != 200) throw HttpException('${res.statusCode}');
+    final bytes = Uint8List.fromList([for (final c in await res.toList()) ...c]);
+    if (file != null) {
+      await file.parent.create(recursive: true);
+      await file.writeAsBytes(bytes);
+    }
+    return _ready[url] = bytes;
+  } catch (_) {
+    return _ready[url] = file != null && file.existsSync() ? await file.readAsBytes() : null;
+  } finally {
+    client.close();
+  }
+}();
+
 /// Foto redonda de un usuario. Mientras carga, o sin internet, muestra sus
-/// iniciales sobre un color fijo por nombre. Flutter cachea la imagen por URL,
-/// así que cada autor se descarga una sola vez por sesión.
+/// iniciales sobre un color fijo por nombre.
 class Avatar extends StatelessWidget {
   const Avatar({super.key, this.email, this.user, required this.name, this.size = 20});
   final String? email, user;
@@ -29,20 +68,18 @@ class Avatar extends StatelessWidget {
         ? avatarForUser(user!, size: px)
         : (email != null && email!.contains('@') ? avatarForEmail(email!, size: px) : null);
     final fallback = _Initials(name: name, size: size);
+    Widget image(Uint8List? bytes) => bytes == null
+        ? fallback
+        : Image.memory(bytes, width: size, height: size, fit: BoxFit.cover, cacheWidth: px, errorBuilder: (_, _, _) => fallback);
     return ClipOval(
       child: SizedBox.square(
         dimension: size,
         child: url == null
             ? fallback
-            : Image.network(
-                url,
-                width: size,
-                height: size,
-                fit: BoxFit.cover,
-                cacheWidth: px,
-                frameBuilder: (_, child, frame, _) => frame == null ? fallback : child,
-                errorBuilder: (_, _, _) => fallback,
-              ),
+            // Si ya está en memoria se dibuja directo, sin pasar por las iniciales.
+            : _ready.containsKey(url)
+            ? image(_ready[url])
+            : FutureBuilder(future: avatarBytes(url), builder: (_, snap) => image(snap.data)),
       ),
     );
   }
