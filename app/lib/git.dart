@@ -243,7 +243,10 @@ Future<List<Commit>> searchLog(String repo, String query) async {
 
 /// Archivos tocados por un commit, con su estado.
 Future<List<FileChange>> commitFiles(String repo, String hash) async {
-  final out = await git(['show', '--format=', '--name-status', '-M', '-z', hash], cwd: repo);
+  // Un merge se muestra contra su primer padre (la rama antes del merge), como
+  // Desktop: lo que trajo. Sin esto git solo lista lo que tuvo conflicto, y
+  // casi siempre sale vacío.
+  final out = await git(['show', '--format=', '--name-status', '-M', '-z', '--diff-merges=first-parent', hash], cwd: repo);
   final p = out.split('\x00');
   final files = <FileChange>[];
   for (var i = 0; i + 1 < p.length; i++) {
@@ -265,7 +268,7 @@ Future<List<FileChange>> commitFiles(String repo, String hash) async {
 }
 
 Future<String> commitFileDiff(String repo, String hash, FileChange f) =>
-    git(['show', '--format=', '-M', hash, '--', if (f.oldPath != null) f.oldPath!, f.path], cwd: repo);
+    git(['show', '--format=', '-M', '--diff-merges=first-parent', hash, '--', if (f.oldPath != null) f.oldPath!, f.path], cwd: repo);
 
 /// URL del remoto `origin`, o null si no tiene.
 Future<String?> originUrl(String repo) async {
@@ -468,7 +471,10 @@ Future<void> undoLastCommit(String repo) => git(['reset', '--soft', 'HEAD~1'], c
 
 // --- Conflictos -----------------------------------------------------------------
 
-enum MergeState { none, merge, rebase }
+/// `stash`: un pull que apartó los cambios sin commitear (`--autostash`) y al
+/// volver a ponerlos chocaron con lo que llegó. No hay merge a medias: solo
+/// archivos en conflicto, y la copia de los cambios sigue en el apartado.
+enum MergeState { none, merge, rebase, stash }
 
 /// Si el repo quedó a mitad de un merge o un rebase (típico de un pull con conflictos).
 Future<MergeState> mergeState(String repo) async {
@@ -480,14 +486,18 @@ Future<MergeState> mergeState(String repo) async {
 
   if (await exists('MERGE_HEAD')) return MergeState.merge;
   if (await exists('rebase-merge') || await exists('rebase-apply')) return MergeState.rebase;
+  // Conflictos sin merge ni revert a medias: vienen de volver a poner un apartado.
+  final unmerged = (await git(['diff', '--name-only', '--diff-filter=U'], cwd: repo)).trim();
+  if (unmerged.isNotEmpty && !await exists('REVERT_HEAD') && !await exists('CHERRY_PICK_HEAD')) return MergeState.stash;
   return MergeState.none;
 }
 
 /// Resuelve un archivo en conflicto quedándose con una versión entera.
-/// [mine] = mi versión local. Ojo: en un rebase git invierte ours/theirs (ours
-/// es lo que viene del remoto), por eso depende de [state].
+/// [mine] = mi versión local. Ojo: en un rebase y al volver a poner un apartado
+/// git invierte ours/theirs (ours es lo que vino del remoto), por eso depende
+/// de [state].
 Future<void> resolveWith(String repo, String path, {required bool mine, required MergeState state}) async {
-  final ours = state == MergeState.rebase ? !mine : mine;
+  final ours = state == MergeState.rebase || state == MergeState.stash ? !mine : mine;
   await git(['checkout', ours ? '--ours' : '--theirs', '--', path], cwd: repo);
   await git(['add', '--', path], cwd: repo);
 }
@@ -498,9 +508,42 @@ Future<void> markResolved(String repo, String path) => git(['add', '--', path], 
 Future<void> abortMerge(String repo, MergeState state) => git([state == MergeState.rebase ? 'rebase' : 'merge', '--abort'], cwd: repo);
 
 /// Termina el merge (commit con el mensaje que propone git) o sigue el rebase.
-Future<void> finishMerge(String repo, MergeState state, {List<String> identity = const []}) => state == MergeState.rebase
-    ? git([...identity, 'rebase', '--continue'], cwd: repo, env: {'GIT_EDITOR': 'true'})
-    : git([...identity, 'commit', '--no-edit'], cwd: repo, env: {'GIT_EDITOR': 'true'});
+/// En [MergeState.stash] no hay nada que commitear: los cambios resueltos
+/// vuelven a quedar sin commitear (fuera del stage) y se borra el apartado que
+/// dejó el pull, porque su contenido ya está en los archivos.
+Future<void> finishMerge(String repo, MergeState state, {List<String> identity = const []}) async {
+  switch (state) {
+    case MergeState.rebase:
+      await git([...identity, 'rebase', '--continue'], cwd: repo, env: {'GIT_EDITOR': 'true'});
+    case MergeState.stash:
+      await git(['reset', '-q'], cwd: repo);
+      final auto = (await shelves(repo)).where((s) => s.name == 'autostash').firstOrNull;
+      if (auto != null) await dropShelf(repo, auto);
+    case MergeState.merge || MergeState.none:
+      await git([...identity, 'commit', '--no-edit'], cwd: repo, env: {'GIT_EDITOR': 'true'});
+  }
+}
+
+/// Pull como GitHub Desktop: con merge, salvo que el usuario haya configurado
+/// `pull.rebase` (sin decirlo, git falla con "divergent branches" cuando hay
+/// commits de los dos lados). Con [autostash] aparta los cambios sin commitear,
+/// trae y los vuelve a poner; si chocan quedan en conflicto ([MergeState.stash]).
+Future<void> pull(String repo, {List<String> identity = const [], Map<String, String> env = const {}, bool autostash = false}) async {
+  final rebase = (await git(['config', '--get', 'pull.rebase'], cwd: repo, okCodes: {0, 1})).trim();
+  await git([...identity, 'pull', if (rebase.isEmpty) '--no-rebase', if (autostash) '--autostash'], cwd: repo, env: env);
+}
+
+/// Archivos con cambios sin commitear que impiden un pull (git se niega para no
+/// pisarlos). Null si el error es otro.
+List<String>? pullBlockedBy(String message) {
+  if (message.contains('cannot pull with rebase: You have unstaged changes')) return const [];
+  final m = RegExp(r'would be overwritten by (?:merge|checkout):\n((?:\s+\S.*\n?)+)').firstMatch(message);
+  if (m == null) return null;
+  return [
+    for (final l in m[1]!.split('\n'))
+      if (l.trim().isNotEmpty && !l.contains('Please commit')) l.trim(),
+  ];
+}
 
 /// Tramos de un archivo con marcas de conflicto, para pintarlo.
 enum ConflictPart { normal, marker, mine, base, theirs }

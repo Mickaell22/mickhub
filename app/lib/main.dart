@@ -254,6 +254,51 @@ class _ShellState extends State<Shell> {
     }
   }
 
+  /// Pregunta si apartar los cambios sin commitear para poder traer.
+  Future<bool> _askAutostash(List<String> files) async =>
+      await showDialog<bool>(
+        context: context,
+        builder: (c) => AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.inventory_2_outlined, size: 18),
+              SizedBox(width: 8),
+              Text('Tienes cambios en archivos que también llegan', style: TextStyle(fontSize: 14)),
+            ],
+          ),
+          content: SizedBox(
+            width: 520,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Git no trae para no pisar tus cambios sin commitear. MickHub puede apartarlos, traer y volver a '
+                  'ponerlos encima. Si tocaste las mismas líneas que llegaron, te muestra el conflicto para que elijas; '
+                  'tu copia queda guardada en Apartados hasta que termines.',
+                ),
+                if (files.isNotEmpty) ...[
+                  const SizedBox(height: Gh.sp),
+                  for (final f in files)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Text(
+                        f,
+                        style: const TextStyle(fontFamily: 'monospace', fontSize: Gh.fontSizeSm),
+                      ),
+                    ),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('Cancelar')),
+            FilledButton(onPressed: () => Navigator.pop(c, true), child: const Text('Apartar, traer y volver a ponerlos')),
+          ],
+        ),
+      ) ??
+      false;
+
   Future<void> _sync() async {
     final repo = _repo, b = _branch;
     if (repo == null || b == null) return;
@@ -266,7 +311,7 @@ class _ShellState extends State<Shell> {
       } else if (b.upstream == null) {
         await git(['push', '-u', 'origin', 'HEAD'], cwd: repo, env: env);
       } else if (b.behind > 0) {
-        await git([...?_account?.identityArgs, 'pull'], cwd: repo, env: env); // un pull puede crear un merge
+        await pull(repo, identity: _account?.identityArgs ?? const [], env: env); // un pull puede crear un merge
       } else if (b.ahead > 0) {
         await git(['push'], cwd: repo, env: env);
       } else {
@@ -282,6 +327,20 @@ class _ShellState extends State<Shell> {
       } else if (e.message.contains('CONFLICT') || e.message.contains('Automatic merge failed')) {
         setState(() => _tab = RepoTab.changes);
         _snack('El pull trajo conflictos. Resuélvelos en Cambios (aviso naranja arriba) o aborta el merge.');
+      } else if (pullBlockedBy(e.message) case final blocking? when mounted) {
+        // Cambios sin commitear en archivos que también trae el pull: como
+        // Desktop, se apartan, se trae y se vuelven a poner.
+        if (await _askAutostash(blocking)) {
+          try {
+            await pull(repo, identity: account?.identityArgs ?? const [], env: await gitAuthEnv(account, _origins[repo]), autostash: true);
+            if (await mergeState(repo) == MergeState.stash) {
+              setState(() => _tab = RepoTab.changes);
+              _snack('Se trajeron los cambios, pero chocaron con los tuyos en las mismas líneas. Resuélvelo en Cambios.');
+            }
+          } on GitException catch (e2) {
+            _snack(e2.message);
+          }
+        }
       } else if (isAuthError(e.message) && account != null && mounted) {
         // Típico de Azure: la sesión vence cada cierto tiempo. Login y reintento.
         if (await askLogin(context, account, targetOf(_origins[repo]))) {

@@ -591,6 +591,7 @@ class _ChangesPaneState extends State<ChangesPane> {
   /// Aviso de merge/rebase a medias: cuántos conflictos quedan, abortar o terminar.
   Widget _mergeBanner() {
     final left = _conflicts;
+    final stash = _merge == MergeState.stash;
     final what = _merge == MergeState.rebase ? 'rebase' : 'merge';
     return Container(
       padding: const EdgeInsets.all(Gh.sp),
@@ -607,22 +608,37 @@ class _ChangesPaneState extends State<ChangesPane> {
               const SizedBox(width: 6),
               Expanded(
                 child: Text(
-                  left == 0 ? 'Conflictos resueltos. Termina el $what.' : '$left ${left == 1 ? 'archivo' : 'archivos'} en conflicto',
+                  left == 0
+                      ? (stash ? 'Conflictos resueltos. Aprieta Listo.' : 'Conflictos resueltos. Termina el $what.')
+                      : '$left ${left == 1 ? 'archivo' : 'archivos'} en conflicto',
                   style: const TextStyle(fontWeight: FontWeight.w600),
                 ),
               ),
             ],
           ),
+          if (stash)
+            const Padding(
+              padding: EdgeInsets.only(top: 4),
+              child: Text(
+                'Tus cambios sin commitear chocaron con lo que trajo el pull. Elige con qué quedarte en cada archivo; '
+                'mientras tanto tu copia completa sigue guardada en Apartados ("autostash").',
+                style: TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
+              ),
+            ),
           const SizedBox(height: 6),
           Row(
             children: [
-              Expanded(
-                child: OutlinedButton(
-                  onPressed: () => _guard(() => abortMerge(widget.repo, _merge).then((_) => widget.onCommitted())),
-                  child: Text('Abortar $what'),
+              // Al volver a poner un apartado no hay nada que abortar: la copia
+              // de los cambios sigue en Apartados.
+              if (!stash) ...[
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () => _guard(() => abortMerge(widget.repo, _merge).then((_) => widget.onCommitted())),
+                    child: Text('Abortar $what'),
+                  ),
                 ),
-              ),
-              const SizedBox(width: 6),
+                const SizedBox(width: 6),
+              ],
               Expanded(
                 child: FilledButton(
                   onPressed: left > 0
@@ -631,7 +647,7 @@ class _ChangesPaneState extends State<ChangesPane> {
                           await finishMerge(widget.repo, _merge, identity: widget.account?.identityArgs ?? const []);
                           widget.onCommitted();
                         }),
-                  child: const Text('Terminar'),
+                  child: Text(stash ? 'Listo' : 'Terminar'),
                 ),
               ),
             ],
@@ -667,7 +683,13 @@ class _ChangesPaneState extends State<ChangesPane> {
             runSpacing: 6,
             crossAxisAlignment: WrapCrossAlignment.center,
             children: [
-              const Text('Verde: tu versión · Azul: la del remoto.  ', style: TextStyle(color: Gh.textSecondary)),
+              // Al volver a poner un apartado git pone primero lo que llegó y después lo tuyo.
+              Text(
+                _merge == MergeState.stash
+                    ? 'Verde: lo que llegó del remoto · Azul: tus cambios.  '
+                    : 'Verde: tu versión · Azul: la del remoto.  ',
+                style: const TextStyle(color: Gh.textSecondary),
+              ),
               OutlinedButton.icon(
                 onPressed: () => _guard(() => resolveWith(widget.repo, f.path, mine: true, state: _merge)),
                 icon: const Icon(Icons.person_outline, size: 16),
