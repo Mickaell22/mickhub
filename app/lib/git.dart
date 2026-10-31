@@ -39,6 +39,12 @@ Future<Uint8List?> blobAt(String repo, String rev, String path) async {
   return r.exitCode == 0 ? Uint8List.fromList(r.stdout as List<int>) : null;
 }
 
+/// Para las lecturas que MickHub hace seguido (status): sin esto `git status`
+/// toma un momento `.git/index.lock` para refrescar el índice y choca con un
+/// commit o un cambio de rama hecho a la vez en GitHub Desktop o la terminal
+/// ("index.lock: File exists"). Desktop hace lo mismo.
+const readOnly = {'GIT_OPTIONAL_LOCKS': '0'};
+
 /// Pares `clave=valor` del protocolo de credenciales de git.
 Map<String, String> parseKeyValues(String s) => {
   for (final l in LineSplitter.split(s))
@@ -91,7 +97,7 @@ List<FileChange> parseStatus(String out) {
 }
 
 Future<List<FileChange>> status(String repo) async =>
-    parseStatus(await git(['status', '--porcelain=v1', '-z', '--untracked-files=all'], cwd: repo));
+    parseStatus(await git(['status', '--porcelain=v1', '-z', '--untracked-files=all'], cwd: repo, env: readOnly));
 
 /// Diff de un archivo con cambios sin commitear (contra HEAD, o contra nada si
 /// es nuevo).
@@ -180,7 +186,8 @@ RepoSummary parseSummary(String out) {
   return RepoSummary(BranchState(name, upstream: upstream, ahead: ahead, behind: behind!), changes);
 }
 
-Future<RepoSummary> repoSummary(String repo) async => parseSummary(await git(['status', '--porcelain=v2', '--branch'], cwd: repo));
+Future<RepoSummary> repoSummary(String repo) async =>
+    parseSummary(await git(['status', '--porcelain=v2', '--branch'], cwd: repo, env: readOnly));
 
 Future<BranchState> branchState(String repo) async => (await repoSummary(repo)).branch;
 
@@ -371,6 +378,13 @@ Future<void> unprotect(String repo, Protected p) async {
 
 /// Descarta los cambios de un archivo: los versionados vuelven a HEAD y los
 /// nuevos se borran. Sin papelera: quien llama debe pedir confirmación.
+/// Descarta solo algunos bloques de un archivo versionado (su diff contra HEAD
+/// e índices de bloque); el resto de sus cambios se queda.
+Future<void> discardHunks(String repo, String diff, Set<int> hunks) async {
+  final patch = selectHunks(diff, hunks);
+  if (patch != null) await git(['apply', '-R', '-'], cwd: repo, stdin: patch);
+}
+
 Future<void> discard(String repo, FileChange f) async {
   if (await isTracked(repo, f.path)) {
     await git(['restore', '--source=HEAD', '--staged', '--worktree', '--', f.path], cwd: repo);

@@ -81,9 +81,15 @@ class ChangeGroups {
   String groupOf(String path) => files[path] ?? '';
 
   /// Pone al día las asignaciones con los archivos que tienen cambios: los
-  /// nuevos caen en el grupo activo (o quedan sin grupo) y se olvidan los que
-  /// ya no cambian. Sin grupos no hace nada, para no escribir el JSON en repos
-  /// donde no se usan. Devuelve true si algo cambió.
+  /// nuevos caen en el grupo activo (o quedan sin grupo). Lo asignado a un grupo,
+  /// "Sin grupo" incluido, **se recuerda aunque ahora no tenga cambios**: al apartar o al cambiar de
+  /// rama (GitHub Desktop aparta solo) los cambios se van y vuelven, y deben
+  /// volver a su grupo. Se olvida con [forget], al commitear o descartar. Sin
+  /// grupos no hace nada, para no escribir el JSON en repos donde no se usan.
+  /// Devuelve true si algo cambió.
+  // ponytail: si se commitea fuera de MickHub, el archivo vuelve a su grupo la
+  // próxima vez que cambie (se mueve con un clic). Upgrade: guardar con la
+  // asignación el hash del blob para saber si es el mismo cambio.
   bool sync(Iterable<String> changed) {
     if (names.isEmpty && files.isEmpty && hunks.isEmpty) return false;
     final now = changed.toSet();
@@ -94,17 +100,16 @@ class ChangeGroups {
       dirty = true;
     }
     for (final p in files.keys.toList()) {
-      if (!now.contains(p) || !known.contains(files[p])) {
-        files.remove(p);
+      if (!known.contains(files[p])) {
+        files[p] = ''; // su grupo ya no existe
         dirty = true;
       }
     }
     for (final p in hunks.keys.toList()) {
+      final before = hunks[p]!.length;
       hunks[p]!.removeWhere((_, g) => !known.contains(g));
-      if (!now.contains(p) || hunks[p]!.isEmpty) {
-        hunks.remove(p);
-        dirty = true;
-      }
+      if (hunks[p]!.isEmpty) hunks.remove(p);
+      if (hunks[p]?.length != before) dirty = true;
     }
     for (final p in now) {
       if (!files.containsKey(p)) {
@@ -113,6 +118,15 @@ class ChangeGroups {
       }
     }
     return dirty;
+  }
+
+  /// Olvida el grupo de [paths]: se commitearon o descartaron, así que si
+  /// vuelven a cambiar es otro cambio (va al grupo activo).
+  void forget(Iterable<String> paths) {
+    for (final p in paths) {
+      files.remove(p);
+      hunks.remove(p);
+    }
   }
 
   /// Grupo de cada bloque de [diff] (de [path]), en orden.

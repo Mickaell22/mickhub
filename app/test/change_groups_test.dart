@@ -33,10 +33,10 @@ void main() {
     expect(hunkKeys('@@ -1 +1 @@\n-a\n+b\n@@ -9 +9 @@\n-a\n+b\n').toSet().length, 2); // iguales, distintos por orden
   });
 
-  test('sync: lo nuevo cae en el activo y se olvida lo que ya no cambia', () {
+  test('sync: lo nuevo cae en el activo y lo agrupado se recuerda aunque no cambie', () {
     final g = ChangeGroups(names: ['Buscador', 'Reportes'], active: 'Buscador', files: {'viejo.dart': 'Reportes', 'r.dart': 'Reportes'});
     expect(g.sync(['r.dart', 'nuevo.dart']), isTrue);
-    expect(g.files, {'r.dart': 'Reportes', 'nuevo.dart': 'Buscador'});
+    expect(g.files, {'viejo.dart': 'Reportes', 'r.dart': 'Reportes', 'nuevo.dart': 'Buscador'});
     expect(g.sync(['r.dart', 'nuevo.dart']), isFalse);
     g.remove('Reportes');
     expect(g.groupOf('r.dart'), '');
@@ -121,5 +121,31 @@ void main() {
     await unshelve(r, (await shelves(r)).single);
     expect(File('$r/app.dart').readAsStringSync(), '${edited.join('\n')}\n');
     expect(File('$r/impl.dart').readAsStringSync(), 'nuevo módulo');
+  });
+
+  test('al apartar o cambiar de rama los archivos vuelven a su grupo; commitear los olvida', () {
+    const diff = '@@ -1,3 +1,3 @@\n-a\n+b\n@@ -20,3 +20,3 @@\n-c\n+d\n';
+    final g = ChangeGroups()..add('Buscador', ['barra.dart', 'mio.dart', 'suelto.dart'], take: ['barra.dart', 'mio.dart']);
+    g.add('Reportes', ['barra.dart', 'mio.dart', 'suelto.dart']);
+    g.moveHunks('mio.dart', diff, {1}, 'Reportes');
+    g.sync([]); // se apartó todo (o GitHub Desktop cambió de rama)
+    g.sync(['barra.dart', 'mio.dart', 'suelto.dart']); // y volvió
+    expect(g.groupOf('barra.dart'), 'Buscador');
+    expect(g.hunkGroups('mio.dart', diff), ['Buscador', 'Reportes']);
+    expect(g.groupOf('suelto.dart'), ''); // estaba sin grupo a propósito: el activo no se lo lleva al volver
+
+    g.forget(['barra.dart']);
+    g.sync(['mio.dart']);
+    g.sync(['mio.dart', 'barra.dart']);
+    expect(g.groupOf('barra.dart'), 'Reportes'); // commiteado y vuelto a tocar: va al activo
+  });
+
+  test('descartar un grupo con un archivo repartido: se va solo su bloque', () async {
+    final (r, edited) = await repoWithTwoHunks();
+    final diff = await fileDiff(r, (await status(r)).single);
+    await discardHunks(r, diff, {1}); // la implementación grande
+    final now = File('$r/app.dart').readAsStringSync();
+    expect(now, contains('barra de búsqueda'));
+    expect(now, isNot(contains('implementación grande')));
   });
 }
