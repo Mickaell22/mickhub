@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 class GitException implements Exception {
   GitException(this.args, this.message);
@@ -28,6 +29,14 @@ Future<String> git(
   await p.stdin.close();
   if (!okCodes.contains(await p.exitCode)) throw GitException(args, (await err).trim());
   return out;
+}
+
+/// Contenido de [path] en la versión [rev] (`HEAD`, un hash, `<hash>^`...), en
+/// bytes crudos: [git] decodifica como texto y rompería una imagen. Null si en
+/// esa versión el archivo no existe.
+Future<Uint8List?> blobAt(String repo, String rev, String path) async {
+  final r = await Process.run('git', ['show', '$rev:$path'], workingDirectory: repo, stdoutEncoding: null);
+  return r.exitCode == 0 ? Uint8List.fromList(r.stdout as List<int>) : null;
 }
 
 /// Pares `clave=valor` del protocolo de credenciales de git.

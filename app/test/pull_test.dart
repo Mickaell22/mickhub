@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mickhub/git.dart';
+import 'package:mickhub/image_diff.dart';
 
 const _id = ['-c', 'user.name=t', '-c', 'user.email=t@t'];
 
@@ -84,5 +85,19 @@ void main() {
     final files = await commitFiles(mio, merge);
     expect(files.map((f) => f.path), ['f.txt']);
     expect(await commitFileDiff(mio, merge, files.single), contains('+REMOTO'));
+  });
+
+  test('imágenes: blobAt da los bytes exactos de cada versión (sin pasar por texto)', () async {
+    final (mio, _) = await twoClones();
+    final v1 = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff, 0xfe, 0x80, 0xc3, 0x28];
+    File('$mio/logo.png').writeAsBytesSync(v1);
+    await git(['add', '.'], cwd: mio);
+    await git([..._id, 'commit', '-q', '-m', 'logo'], cwd: mio);
+    File('$mio/logo.png').writeAsBytesSync([...v1, 0x01]);
+    final head = (await git(['rev-parse', 'HEAD'], cwd: mio)).trim();
+
+    expect(await blobAt(mio, 'HEAD', 'logo.png'), v1);
+    expect(await blobAt(mio, '$head^', 'logo.png'), isNull); // antes de ese commit no existía
+    expect(isImagePath('a/B.PNG') && isImagePath('x.jpeg') && !isImagePath('x.svg') && !isImagePath('x.dart'), isTrue);
   });
 }

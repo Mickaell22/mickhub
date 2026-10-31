@@ -11,6 +11,7 @@ import 'avatar.dart';
 import 'system.dart';
 import 'diff_view.dart';
 import 'git.dart';
+import 'image_diff.dart';
 import 'theme.dart';
 import 'trash.dart';
 
@@ -1237,6 +1238,20 @@ class _ChangesPaneState extends State<ChangesPane> {
       ]),
       (_, null, _) => emptyState('Selecciona un archivo', 'Elige un archivo de la lista para ver sus cambios.'),
       (_, final f?, _) when f.status == FileStatus.conflicted => _conflictView(f),
+      // Imágenes: antes (último commit) y después (lo que hay en disco).
+      (_, final f?, _) when isImagePath(f.path) => Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          fileHeader(f),
+          Expanded(
+            child: ImageDiff(
+              key: ValueKey((f.path, widget.tick)),
+              before: f.status == FileStatus.added ? null : () => blobAt(widget.repo, 'HEAD', f.oldPath ?? f.path),
+              after: f.status == FileStatus.deleted ? null : () => File('${widget.repo}/${f.path}').readAsBytes(),
+            ),
+          ),
+        ],
+      ),
       (_, final f?, final d?) => Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -1654,7 +1669,20 @@ class _HistoryPaneState extends State<HistoryPane> {
                       ),
                     ),
                     const VerticalDivider(width: 1, thickness: 1, color: Gh.border),
-                    Expanded(child: _diff == null ? const SizedBox() : DiffView(_diff!, path: _file!.path)),
+                    Expanded(
+                      child: switch ((_file, _diff)) {
+                        // Imágenes: antes (primer padre) y después (el commit).
+                        (final f?, _) when isImagePath(f.path) => ImageDiff(
+                          key: ValueKey((_selected?.hash, f.path)),
+                          before: f.status == FileStatus.added
+                              ? null
+                              : () => blobAt(widget.repo, '${_selected!.hash}^', f.oldPath ?? f.path),
+                          after: f.status == FileStatus.deleted ? null : () => blobAt(widget.repo, _selected!.hash, f.path),
+                        ),
+                        (final f?, final d?) => DiffView(d, path: f.path),
+                        _ => const SizedBox(),
+                      },
+                    ),
                   ],
                 ),
               ),
