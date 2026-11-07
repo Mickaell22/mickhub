@@ -15,6 +15,9 @@ class GitException implements Exception {
 /// Sin prompts de terminal: si falta una credencial, falla en vez de colgarse.
 /// [okCodes] son los códigos de salida que no cuentan como error (p. ej. `git
 /// diff --no-index` sale con 1 cuando hay diferencias).
+// Los mensajes de git van siempre en inglés (`LANGUAGE=C`): MickHub reconoce
+// errores por su texto (pull bloqueado, sesión vencida, conflictos) y con git en
+// español no los detectaba. Solo cambia los mensajes, no las rutas ni el contenido.
 Future<String> git(
   List<String> args, {
   String? cwd,
@@ -22,7 +25,7 @@ Future<String> git(
   Set<int> okCodes = const {0},
   Map<String, String> env = const {},
 }) async {
-  final p = await Process.start('git', args, workingDirectory: cwd, environment: {'GIT_TERMINAL_PROMPT': '0', ...env});
+  final p = await Process.start('git', args, workingDirectory: cwd, environment: {'GIT_TERMINAL_PROMPT': '0', 'LANGUAGE': 'C', ...env});
   final out = p.stdout.transform(utf8.decoder).join();
   final err = p.stderr.transform(utf8.decoder).join();
   if (stdin != null) p.stdin.write(stdin);

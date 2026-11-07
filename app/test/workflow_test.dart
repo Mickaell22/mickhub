@@ -102,7 +102,7 @@ void historyAndConflicts() {
     final found = await searchLog(r, 'LOGIN ROTO'); // está en la página 2: busca en todo
     expect(found.single.summary, 'fix: login roto');
     expect((await searchLog(r, found.single.shortHash)).single.hash, found.single.hash);
-  });
+  }, timeout: const Timeout(Duration(minutes: 2))); // crea más de 200 commits: en equipos lentos pasa de 30 s
 
   test('pull con conflicto: se detecta, se resuelve con una versión y se termina el merge', () async {
     final remote = await tempRepo();

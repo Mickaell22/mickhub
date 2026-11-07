@@ -1,6 +1,6 @@
 # Ejecutables portables (sin instalador) al subir un tag vX.Y.Z:
 #   mickhub-linux-x64.tar.gz   -> descomprimir y abrir MickHub/mickhub
-#   mickhub-windows-x64.zip    -> descomprimir y abrir MickHub\mickhub.exe
+#   mickhub-windows-x64.zip    -> descomprimir y abrir MickHub\MickHub.exe
 # Los nombres no llevan versión para que releases/latest/download/... no se rompa.
 # La versión y el repo se pasan con --dart-define: así el actualizador de la app
 # sabe qué versión es y dónde buscar las nuevas (en builds locales queda apagado).

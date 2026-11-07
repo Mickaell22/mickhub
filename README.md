@@ -12,7 +12,7 @@ Cliente de git de escritorio a mi medida, para Windows y Linux, con vista de sol
 Ejecutables portables, sin instalador: se descomprimen y se abren.
 
 - **Linux x64**: [mickhub-linux-x64.tar.gz](https://github.com/Mickaell22/mickhub/releases/latest/download/mickhub-linux-x64.tar.gz) → `tar -xzf mickhub-linux-x64.tar.gz` y abrir `MickHub/mickhub`.
-- **Windows x64**: [mickhub-windows-x64.zip](https://github.com/Mickaell22/mickhub/releases/latest/download/mickhub-windows-x64.zip) → descomprimir y abrir `MickHub\mickhub.exe`.
+- **Windows x64**: [mickhub-windows-x64.zip](https://github.com/Mickaell22/mickhub/releases/latest/download/mickhub-windows-x64.zip) → descomprimir y abrir `MickHub\MickHub.exe`.
 
 Necesita `git` instalado; en Windows, con el Git Credential Manager (viene con Git for Windows). Cada release trae `SHA256SUMS.txt` para verificar las descargas. MickHub avisa sola cuando hay una versión nueva y se actualiza en el lugar (verifica el SHA256 antes de instalar).
 

@@ -307,7 +307,8 @@ class _ShellState extends State<Shell> {
       final env = await gitAuthEnv(_account, _origins[repo]); // la cuenta de GitHub del repo, no la activa en gh
       if (_origins[repo] == null) {
         if (mounted) setState(() => _syncing = false);
-        return _publish();
+        await _publish();
+        return;
       } else if (b.upstream == null) {
         await git(['push', '-u', 'origin', 'HEAD'], cwd: repo, env: env);
       } else if (b.behind > 0) {

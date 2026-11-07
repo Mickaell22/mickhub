@@ -213,6 +213,11 @@ class _ChangesPaneState extends State<ChangesPane> {
 
   bool _loading = false, _reload = false;
 
+  /// Sube con cada cambio de grupos hecho desde la app. Una lectura que empezó
+  /// antes trae grupos viejos: no se aplica ni se guarda (si no, el grupo que se
+  /// acaba de contraer se volvía a abrir solo, o al revés).
+  int _mutations = 0;
+
   /// Relee todo de git (en paralelo). Si llega otro pedido mientras tanto, se
   /// hace una sola vuelta más al terminar en vez de dos lecturas pisándose.
   Future<void> _load() async {
@@ -224,6 +229,7 @@ class _ChangesPaneState extends State<ChangesPane> {
     try {
       do {
         _reload = false;
+        final m = _mutations;
         final (files, locked, shelved, identity, merge, groups) = await (
           status(widget.repo),
           protectedFiles(widget.repo),
@@ -232,6 +238,10 @@ class _ChangesPaneState extends State<ChangesPane> {
           mergeState(widget.repo),
           ChangeGroups.load(widget.repo),
         ).wait;
+        if (m != _mutations) {
+          _reload = true;
+          continue;
+        }
         if (groups.sync(files.map((f) => f.path))) await groups.save(widget.repo);
         final split = [
           for (final f in files)
@@ -247,8 +257,12 @@ class _ChangesPaneState extends State<ChangesPane> {
           groups,
           {for (var i = 0; i < split.length; i++) split[i].path: diffs[i]},
         );
-        _snapshots[widget.repo] = r;
         if (!mounted) return;
+        if (m != _mutations) {
+          _reload = true;
+          continue;
+        }
+        _snapshots[widget.repo] = r;
         setState(() => _apply(r));
       } while (_reload);
     } finally {
@@ -333,6 +347,7 @@ class _ChangesPaneState extends State<ChangesPane> {
   }
 
   Future<void> _saveGroups(void Function(ChangeGroups g) change) async {
+    _mutations++;
     change(_groups);
     setState(() {});
     await _groups.save(widget.repo);
@@ -342,6 +357,7 @@ class _ChangesPaneState extends State<ChangesPane> {
   /// Olvida el grupo de archivos commiteados o descartados (no relee).
   Future<void> _forget(Iterable<String> paths) async {
     if (_groups.names.isEmpty) return;
+    _mutations++;
     _groups.forget(paths);
     await _groups.save(widget.repo);
   }
@@ -459,6 +475,7 @@ class _ChangesPaneState extends State<ChangesPane> {
   Future<void> _discardGroup(String group, List<FileChange> files) async {
     final n = files.length;
     if (n == 0 || !await _confirmDiscardMany(n == 1 ? '1 archivo de "$group"' : '$n archivos de "$group"')) return;
+    _mutations++;
     await _guard(() async {
       for (final f in files) {
         await widget.trash.save(widget.repo, f.path);
@@ -1537,10 +1554,12 @@ class _HistoryPaneState extends State<HistoryPane> {
   List<FileChange> _files = [];
   FileChange? _file;
   String? _diff;
+  final _fileFilter = TextEditingController(); // busca entre los archivos del commit elegido
 
   @override
   void initState() {
     super.initState();
+    _fileFilter.addListener(() => setState(() {}));
     _load();
   }
 
@@ -1553,6 +1572,7 @@ class _HistoryPaneState extends State<HistoryPane> {
   @override
   void dispose() {
     _searchDebounce?.cancel();
+    _fileFilter.dispose();
     super.dispose();
   }
 
@@ -1596,7 +1616,38 @@ class _HistoryPaneState extends State<HistoryPane> {
     if (mounted && q == _query) setState(() => _results = r);
   }
 
+  Widget _fileList(List<FileChange> files) => files.isEmpty
+      ? const Padding(
+          padding: EdgeInsets.all(Gh.sp),
+          child: Text('Ningún archivo coincide.', style: TextStyle(color: Gh.textSecondary)),
+        )
+      : ListView.builder(
+          itemCount: files.length,
+          itemExtent: Gh.rowHeight,
+          itemBuilder: (_, i) {
+            final f = files[i];
+            return GhRow(
+              selected: f == _file,
+              onTap: () => _selectFile(f),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Tooltip(
+                      message: f.path,
+                      waitDuration: const Duration(seconds: 1),
+                      child: Text(f.path, overflow: TextOverflow.ellipsis),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  statusIcon(f.status),
+                ],
+              ),
+            );
+          },
+        );
+
   Future<void> _select(Commit c) async {
+    if (_selected?.hash != c.hash) _fileFilter.clear();
     setState(() => _selected = c);
     final files = await commitFiles(widget.repo, c.hash);
     if (!mounted || _selected != c) return;
@@ -1780,21 +1831,48 @@ class _HistoryPaneState extends State<HistoryPane> {
                   children: [
                     SizedBox(
                       width: 250,
-                      child: ListView.builder(
-                        itemCount: _files.length,
-                        itemExtent: Gh.rowHeight,
-                        itemBuilder: (_, i) {
-                          final f = _files[i];
-                          return GhRow(
-                            selected: f == _file,
-                            onTap: () => _selectFile(f),
-                            child: Row(
-                              children: [
-                                Expanded(child: Text(f.path, overflow: TextOverflow.ellipsis)),
-                                const SizedBox(width: 4),
-                                statusIcon(f.status),
-                              ],
-                            ),
+                      child: Builder(
+                        builder: (_) {
+                          // Filtro por ruta: si hay varias palabras deben estar todas (p. ej. "api helper").
+                          final words = _fileFilter.text.toLowerCase().split(RegExp(r'\s+')).where((w) => w.isNotEmpty);
+                          final shown = [
+                            for (final f in _files)
+                              if (words.every((w) => '${f.path} ${f.oldPath ?? ''}'.toLowerCase().contains(w))) f,
+                          ];
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Padding(
+                                padding: const EdgeInsets.all(6),
+                                child: TextField(
+                                  controller: _fileFilter,
+                                  style: const TextStyle(fontSize: Gh.fontSize),
+                                  decoration: InputDecoration(
+                                    isDense: true,
+                                    hintText: _files.length == 1 ? 'Buscar en 1 archivo' : 'Buscar en ${_files.length} archivos',
+                                    prefixIcon: const Icon(Icons.search, size: 16),
+                                    suffixIcon: _fileFilter.text.isEmpty
+                                        ? null
+                                        : IconButton(
+                                            iconSize: 14,
+                                            tooltip: 'Limpiar',
+                                            onPressed: _fileFilter.clear,
+                                            icon: const Icon(Icons.close),
+                                          ),
+                                  ),
+                                  onSubmitted: (_) => shown.isEmpty ? null : _selectFile(shown.first),
+                                ),
+                              ),
+                              if (_fileFilter.text.isNotEmpty)
+                                Padding(
+                                  padding: const EdgeInsets.fromLTRB(8, 0, 8, 4),
+                                  child: Text(
+                                    '${shown.length} de ${_files.length}',
+                                    style: const TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
+                                  ),
+                                ),
+                              Expanded(child: _fileList(shown)),
+                            ],
                           );
                         },
                       ),
