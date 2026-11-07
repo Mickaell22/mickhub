@@ -487,6 +487,7 @@ class _ShellState extends State<Shell> {
     ('Ctrl+Shift+P', 'Fetch, pull o push (lo que diga el botón)'),
     ('Ctrl+Shift+F', 'Abrir la carpeta del repo'),
     ('Ctrl+Shift+A', 'Abrir el repo en el editor'),
+    ('Ctrl+`', 'Abrir el repo en la terminal'),
     ('Ctrl+Enter', 'Hacer commit'),
     ('F5', 'Refrescar'),
     ('Esc', 'Cerrar el desplegable'),
@@ -506,6 +507,7 @@ class _ShellState extends State<Shell> {
         const SingleActivator(LogicalKeyboardKey.keyP, control: true, shift: true): () => _syncing ? null : _sync(),
         const SingleActivator(LogicalKeyboardKey.keyF, control: true, shift: true): () => _openFolder(repo),
         const SingleActivator(LogicalKeyboardKey.keyA, control: true, shift: true): () => _openEditor(repo),
+        const SingleActivator(LogicalKeyboardKey.backquote, control: true): () => _openTerminal(repo),
         const SingleActivator(LogicalKeyboardKey.f5): _refresh,
       },
       const SingleActivator(LogicalKeyboardKey.escape): () => setState(() => _foldout = Foldout.none),
@@ -696,6 +698,12 @@ class _ShellState extends State<Shell> {
               icon: const Icon(Icons.folder_open_outlined),
             ),
             IconButton(tooltip: 'Abrir en el editor', iconSize: 18, onPressed: () => _openEditor(_repo!), icon: const Icon(Icons.code)),
+            IconButton(
+              tooltip: 'Abrir en la terminal',
+              iconSize: 18,
+              onPressed: () => _openTerminal(_repo!),
+              icon: const Icon(Icons.terminal),
+            ),
             IconButton(tooltip: 'Papelera', iconSize: 18, onPressed: _showTrash, icon: const Icon(Icons.delete_outline)),
             const SizedBox(width: Gh.sp / 2),
           ],
@@ -709,6 +717,18 @@ class _ShellState extends State<Shell> {
       await openFolder(path);
     } catch (e) {
       _snack('No se pudo abrir la carpeta: $e');
+    }
+  }
+
+  Future<void> _openTerminal(String path) async {
+    final t = await findTerminal(s.terminalCommand);
+    if (t == null) {
+      return _snack('No encontré una terminal. Pon su comando en "terminalCommand" de los ajustes.');
+    }
+    try {
+      await openTerminal(t, path);
+    } catch (_) {
+      _snack('No se pudo abrir la terminal "$t". ¿Está instalada y en el PATH?');
     }
   }
 
@@ -731,6 +751,7 @@ class _ShellState extends State<Shell> {
       items: [
         menuItem('folder', Icons.folder_open_outlined, 'Abrir carpeta'),
         menuItem('editor', Icons.code, 'Abrir en el editor'),
+        menuItem('terminal', Icons.terminal, 'Abrir en la terminal'),
         menuItem('copy', Icons.content_copy, 'Copiar ruta'),
         const PopupMenuDivider(),
         menuItem('group', Icons.drive_file_move_outlined, 'Mover a grupo…'),
@@ -747,6 +768,8 @@ class _ShellState extends State<Shell> {
         await _openFolder(repo);
       case 'editor':
         await _openEditor(repo);
+      case 'terminal':
+        await _openTerminal(repo);
       case 'copy':
         await Clipboard.setData(ClipboardData(text: repo));
       case 'account':

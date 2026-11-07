@@ -18,6 +18,6 @@ Necesita `git` instalado; en Windows, con el Git Credential Manager (viene con G
 
 ## Atajos
 
-`Ctrl+T` repositorio · `Ctrl+B` rama · `Ctrl+Shift+N` nueva rama · `Ctrl+1`/`Ctrl+2` Cambios/Historial · `Ctrl+Shift+P` fetch/pull/push · `Ctrl+Enter` commit · `Ctrl+Shift+F` abrir carpeta · `Ctrl+Shift+A` abrir en el editor (con el archivo seleccionado) · `F5` refrescar · `Ctrl+/` todos los atajos.
+`Ctrl+T` repositorio · `Ctrl+B` rama · `Ctrl+Shift+N` nueva rama · `Ctrl+1`/`Ctrl+2` Cambios/Historial · `Ctrl+Shift+P` fetch/pull/push · `Ctrl+Enter` commit · `Ctrl+Shift+F` abrir carpeta · `Ctrl+Shift+A` abrir en el editor (con el archivo seleccionado) · `Ctrl+`` ` abrir en la terminal · `F5` refrescar · `Ctrl+/` todos los atajos.
 
 Estado: en desarrollo (v1). Ya reemplaza a GitHub Desktop en lo diario: cambios, commit, historial con búsqueda, conflictos, ramas locales, apartados, candado de cambios locales y cuentas de GitHub y Azure DevOps a la vez. Detalles en [CLAUDE.md](./CLAUDE.md).

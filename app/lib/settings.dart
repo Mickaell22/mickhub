@@ -48,6 +48,9 @@ class Settings extends ChangeNotifier {
   /// Comando para "Abrir en el editor".
   String editorCommand = 'code';
 
+  /// Comando para "Abrir en la terminal"; vacío = detectarla sola (findTerminal).
+  String terminalCommand = '';
+
   File? _file;
 
   /// Ruta del JSON de ajustes. Se puede editar desde fuera (por ejemplo Claude
@@ -75,6 +78,7 @@ class Settings extends ChangeNotifier {
     sidebarWidth = (j['sidebarWidth'] as num?)?.toDouble() ?? 250;
     groups = Map<String, String>.from(j['groups'] ?? {});
     editorCommand = j['editorCommand'] ?? 'code';
+    terminalCommand = j['terminalCommand'] ?? '';
     trashDays = (j['trashDays'] as num?)?.toInt() ?? 30;
     groupIcons = Map<String, String>.from(j['groupIcons'] ?? {});
     accounts = [for (final a in j['accounts'] ?? const []) Account.fromJson(a)];
@@ -95,6 +99,7 @@ class Settings extends ChangeNotifier {
         'sidebarWidth': sidebarWidth,
         'groups': groups,
         'editorCommand': editorCommand,
+        'terminalCommand': terminalCommand,
         'trashDays': trashDays,
         'groupIcons': groupIcons,
         'accounts': [for (final a in accounts) a.toJson()],
