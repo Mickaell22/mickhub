@@ -1221,6 +1221,54 @@ class _ChangesPaneState extends State<ChangesPane> {
     }
   }
 
+  /// Menú del espacio vacío de la lista de cambios: acciones sobre todo el repo.
+  Future<void> _listMenu(Offset at) async {
+    final rows = _rows;
+    final n = _files.length;
+    final action = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(at.dx, at.dy, at.dx, at.dy),
+      items: [
+        menuItem('group', Icons.create_new_folder_outlined, 'Nuevo grupo de cambios…'),
+        if (n > 0) ...[
+          menuItem('all', Icons.check_box_outlined, 'Marcar todo para el commit'),
+          menuItem('none', Icons.check_box_outline_blank, 'Desmarcar todo'),
+        ],
+        const PopupMenuDivider(),
+        menuItem('folder', Icons.folder_open_outlined, 'Abrir carpeta del repo'),
+        menuItem('editor', Icons.code, 'Abrir en el editor'),
+        if (n > 0) ...[
+          const PopupMenuDivider(),
+          menuItem('shelve', Icons.inventory_2_outlined, 'Apartar todos los cambios…'),
+          menuItem('discard', Icons.delete_outline, 'Descartar todos los cambios…', danger: true),
+        ],
+      ],
+    );
+    switch (action) {
+      case 'group':
+        await _newGroup();
+      case 'all':
+        setState(_excluded.clear);
+      case 'none':
+        setState(() => _excluded.addAll(rows.map((r) => _key(r.$1, r.$2.path))));
+      case 'folder':
+        widget.onOpenFolder(widget.repo);
+      case 'editor':
+        widget.onOpenEditor();
+      case 'shelve':
+        await _shelve(_files);
+      case 'discard':
+        if (!await _confirmDiscardMany(n == 1 ? '1 archivo' : '$n archivos')) return;
+        await _guard(() async {
+          for (final f in _files) {
+            await widget.trash.save(widget.repo, f.path);
+            await discard(widget.repo, f);
+          }
+          await _forget(_files.map((f) => f.path));
+        });
+    }
+  }
+
   /// Encabezado de un grupo: se contrae con un clic, su casilla marca o
   /// desmarca todo el grupo para el commit y el clic derecho abre sus acciones.
   Widget _groupHeader(String group, List<(String, FileChange)> rows) {
@@ -1354,14 +1402,19 @@ class _ChangesPaneState extends State<ChangesPane> {
           ),
         ),
         Expanded(
-          child: ListView.builder(
-            itemCount: items.length,
-            itemExtent: Gh.rowHeight,
-            itemBuilder: (_, i) => switch (items[i]) {
-              final String g => _groupHeader(g, rows.where((r) => r.$1 == g).toList()),
-              final (String, FileChange) r => _fileRow(r.$1, r.$2, indent: grouped),
-              _ => const SizedBox(),
-            },
+          // Clic derecho en el espacio vacío (las filas y encabezados tienen el suyo).
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onSecondaryTapUp: (d) => _listMenu(d.globalPosition),
+            child: ListView.builder(
+              itemCount: items.length,
+              itemExtent: Gh.rowHeight,
+              itemBuilder: (_, i) => switch (items[i]) {
+                final String g => _groupHeader(g, rows.where((r) => r.$1 == g).toList()),
+                final (String, FileChange) r => _fileRow(r.$1, r.$2, indent: grouped),
+                _ => const SizedBox(),
+              },
+            ),
           ),
         ),
         if (_shelves.isNotEmpty) _shelvesSection(),
@@ -1529,6 +1582,7 @@ class HistoryPane extends StatefulWidget {
     required this.onChanged,
     this.account,
     this.originUrl,
+    this.editorCommand = '',
   });
   final String repo;
   final int ahead;
@@ -1539,6 +1593,7 @@ class HistoryPane extends StatefulWidget {
   final VoidCallback onChanged;
   final Account? account;
   final String? originUrl;
+  final String editorCommand;
 
   @override
   State<HistoryPane> createState() => _HistoryPaneState();
@@ -1629,6 +1684,7 @@ class _HistoryPaneState extends State<HistoryPane> {
             return GhRow(
               selected: f == _file,
               onTap: () => _selectFile(f),
+              onSecondary: (at) => _commitFileMenu(f, at),
               child: Row(
                 children: [
                   Expanded(
@@ -1653,6 +1709,36 @@ class _HistoryPaneState extends State<HistoryPane> {
     if (!mounted || _selected != c) return;
     setState(() => _files = files);
     if (files.isNotEmpty) _selectFile(files.first);
+  }
+
+  /// Clic derecho en un archivo de un commit.
+  Future<void> _commitFileMenu(FileChange f, Offset at) async {
+    final exists = File('${widget.repo}/${f.path}').existsSync();
+    final action = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(at.dx, at.dy, at.dx, at.dy),
+      items: [
+        menuItem('copy', Icons.content_copy, 'Copiar ruta'),
+        if (exists) ...[
+          menuItem('editor', Icons.code, 'Abrir la versión actual en el editor'),
+          menuItem('folder', Icons.folder_open_outlined, 'Abrir carpeta del archivo'),
+        ],
+      ],
+    );
+    switch (action) {
+      case 'copy':
+        await Clipboard.setData(ClipboardData(text: f.path));
+      case 'editor':
+        try {
+          await openInEditor(widget.editorCommand, widget.repo, file: f.path);
+        } catch (_) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('No se encontró el editor "${widget.editorCommand}".')));
+          }
+        }
+      case 'folder':
+        await openFolder(File('${widget.repo}/${f.path}').parent.path);
+    }
   }
 
   Future<void> _selectFile(FileChange f) async {

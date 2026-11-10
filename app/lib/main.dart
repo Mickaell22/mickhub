@@ -299,13 +299,29 @@ class _ShellState extends State<Shell> {
       ) ??
       false;
 
-  Future<void> _sync() async {
+  /// Sincroniza como Desktop: publica, sube, trae o hace fetch según toque.
+  /// [only] fuerza una acción ('fetch', 'pull' o 'push'), desde el clic derecho.
+  Future<void> _sync({String? only}) async {
     final repo = _repo, b = _branch;
     if (repo == null || b == null) return;
     setState(() => _syncing = true);
     try {
       final env = await gitAuthEnv(_account, _origins[repo]); // la cuenta de GitHub del repo, no la activa en gh
-      if (_origins[repo] == null) {
+      if (only == 'fetch') {
+        await git(['fetch', '--prune'], cwd: repo, env: env);
+        _lastFetch[repo] = DateTime.now();
+      } else if (only == 'pull') {
+        await pull(repo, identity: _account?.identityArgs ?? const [], env: env);
+      } else if (only == 'push') {
+        await git(
+          [
+            'push',
+            if (b.upstream == null) ...['-u', 'origin', 'HEAD'],
+          ],
+          cwd: repo,
+          env: env,
+        );
+      } else if (_origins[repo] == null) {
         if (mounted) setState(() => _syncing = false);
         await _publish();
         return;
@@ -347,7 +363,7 @@ class _ShellState extends State<Shell> {
         if (await askLogin(context, account, targetOf(_origins[repo]))) {
           _sessions[account.id] = const Session(SessionState.ok);
           if (mounted) setState(() => _syncing = false);
-          return _sync();
+          return _sync(only: only);
         }
       } else {
         _snack(e.message);
@@ -644,6 +660,7 @@ class _ShellState extends State<Shell> {
             open: _foldout == Foldout.repos,
             dropdown: true,
             onTap: () => setState(() => _foldout = _foldout == Foldout.repos ? Foldout.none : Foldout.repos),
+            onSecondary: _repo == null ? (at) => _addMenuAt(at) : (at) => _repoMenu(_repo!, at),
           ),
           ToolbarButton(
             width: 230,
@@ -653,6 +670,7 @@ class _ShellState extends State<Shell> {
             open: _foldout == Foldout.branches,
             dropdown: true,
             onTap: _repo == null ? null : () => setState(() => _foldout = _foldout == Foldout.branches ? Foldout.none : Foldout.branches),
+            onSecondary: _repo == null || b == null ? null : _branchMenu,
           ),
           ToolbarButton(
             width: 230,
@@ -661,6 +679,7 @@ class _ShellState extends State<Shell> {
             label: _syncing ? 'Sincronizando…' : syncLabel,
             spinning: _syncing,
             onTap: _repo == null || b == null || _syncing ? null : _sync,
+            onSecondary: _repo == null || b == null || _syncing ? null : _syncMenu,
           ),
           const Spacer(),
           if (_update != null)
@@ -963,9 +982,56 @@ class _ShellState extends State<Shell> {
   /// con un PopupMenuButton dentro del panel: el panel se cierra al elegir una
   /// opción y, si el menú dependiera de él, Flutter falla en plena animación de
   /// salida ('_dependents.isEmpty').
-  Future<void> _addMenu(BuildContext button) async {
+  Future<void> _addMenu(BuildContext button) {
     final box = button.findRenderObject()! as RenderBox;
-    final at = box.localToGlobal(Offset(0, box.size.height));
+    return _addMenuAt(box.localToGlobal(Offset(0, box.size.height)));
+  }
+
+  /// Menú de la barra "Rama actual": lo mismo que su desplegable, a mano.
+  Future<void> _branchMenu(Offset at) async {
+    final b = _branch!;
+    final action = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(at.dx, at.dy, at.dx, at.dy),
+      items: [
+        menuItem('switch', Icons.call_split, 'Cambiar de rama…'),
+        menuItem('new', Icons.add, 'Nueva rama…'),
+        const PopupMenuDivider(),
+        menuItem('copy', Icons.content_copy, 'Copiar nombre de la rama'),
+      ],
+    );
+    switch (action) {
+      case 'switch':
+        setState(() => _foldout = Foldout.branches);
+      case 'new':
+        await _newBranch();
+      case 'copy':
+        await Clipboard.setData(ClipboardData(text: b.name));
+    }
+  }
+
+  /// Menú del botón de sincronizar: cada acción por separado, para no depender
+  /// de lo que el botón elija (por ejemplo traer aunque haya algo para subir).
+  Future<void> _syncMenu(Offset at) async {
+    final b = _branch!;
+    final hasRemote = _origins[_repo] != null;
+    final action = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(at.dx, at.dy, at.dx, at.dy),
+      items: [
+        if (hasRemote) ...[
+          menuItem('fetch', Icons.sync, 'Fetch (ver si hay cambios)'),
+          menuItem('pull', Icons.download, b.behind > 0 ? 'Pull (traer ${b.behind})' : 'Pull (traer)'),
+          menuItem('push', Icons.upload, b.ahead > 0 ? 'Push (subir ${b.ahead})' : 'Push (subir)'),
+        ] else
+          menuItem('publish', Icons.cloud_upload_outlined, 'Publicar repositorio…'),
+      ],
+    );
+    if (action == 'publish') return _publish();
+    if (action != null) await _sync(only: action);
+  }
+
+  Future<void> _addMenuAt(Offset at) async {
     final action = await showMenu<String>(
       context: context,
       position: RelativeRect.fromLTRB(at.dx, at.dy, at.dx, at.dy),
@@ -1241,6 +1307,7 @@ class _ShellState extends State<Shell> {
             onChanged: _refresh,
             account: _account,
             originUrl: _origins[repo],
+            editorCommand: s.editorCommand,
           );
   }
 
@@ -1332,6 +1399,7 @@ class _ShellState extends State<Shell> {
         ),
       ),
     ),
+    onBackgroundSecondary: _addMenuAt,
     onTap: _open,
   );
 
@@ -1361,6 +1429,7 @@ class ToolbarButton extends StatelessWidget {
     required this.title,
     required this.label,
     this.onTap,
+    this.onSecondary,
     this.open = false,
     this.dropdown = false,
     this.spinning = false,
@@ -1369,6 +1438,7 @@ class ToolbarButton extends StatelessWidget {
   final IconData icon;
   final String title, label;
   final VoidCallback? onTap;
+  final ValueChanged<Offset>? onSecondary;
   final bool open, dropdown, spinning;
 
   @override
@@ -1381,6 +1451,7 @@ class ToolbarButton extends StatelessWidget {
         color: open ? Gh.bg : Colors.transparent,
         child: InkWell(
           onTap: onTap,
+          onSecondaryTapUp: onSecondary == null ? null : (d) => onSecondary!(d.globalPosition),
           hoverColor: Gh.hover,
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: Gh.sp),
@@ -1442,6 +1513,7 @@ class _FilterList extends StatefulWidget {
     this.onGroupSecondary,
     this.onSecondary,
     this.trailing,
+    this.onBackgroundSecondary,
     this.collapsed = const {},
     this.onCollapsed,
     this.groupFilter = const {},
@@ -1460,6 +1532,9 @@ class _FilterList extends StatefulWidget {
   final void Function(String group, Offset at)? onGroupSecondary;
   final void Function(String item, Offset at)? onSecondary;
   final Widget? Function(String item)? trailing;
+
+  /// Clic derecho en el espacio vacío de la lista (fuera de las filas).
+  final ValueChanged<Offset>? onBackgroundSecondary;
 
   /// Grupos contraídos ('' = sin grupo) y grupos marcados en el filtro (vacío =
   /// todos). Los guarda quien usa la lista, para que se recuerden.
@@ -1573,67 +1648,72 @@ class _FilterListState extends State<_FilterList> {
             ),
           ),
         Expanded(
-          child: shown.isEmpty
-              ? Padding(
-                  padding: const EdgeInsets.all(Gh.sp),
-                  child: Text(widget.emptyText, style: const TextStyle(color: Gh.textSecondary)),
-                )
-              : ListView.builder(
-                  itemCount: rows.length,
-                  itemExtent: Gh.rowHeight,
-                  itemBuilder: (_, i) {
-                    final r = rows[i];
-                    if (r is (String, String, int)) {
-                      final (title, key, count) = r;
-                      final named = groups.contains(key);
-                      final foldable = groups.isNotEmpty && !searching;
-                      final open = !_collapsed.contains(key);
-                      return InkWell(
-                        onTap: foldable ? () => _toggle(key) : null,
-                        onSecondaryTapUp: groups.isNotEmpty && widget.onGroupSecondary != null
-                            ? (d) => widget.onGroupSecondary!(key, d.globalPosition)
-                            : null,
-                        child: Container(
-                          alignment: Alignment.bottomLeft,
-                          padding: const EdgeInsets.fromLTRB(Gh.sp, 0, Gh.sp, 4),
-                          child: Row(
-                            children: [
-                              if (foldable) ...[
-                                Icon(open ? Icons.expand_more : Icons.chevron_right, size: 16, color: Gh.textSecondary),
-                                const SizedBox(width: 2),
+          // Clic derecho en el espacio vacío: las filas tienen su propio menú y ganan.
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onSecondaryTapUp: widget.onBackgroundSecondary == null ? null : (d) => widget.onBackgroundSecondary!(d.globalPosition),
+            child: shown.isEmpty
+                ? Padding(
+                    padding: const EdgeInsets.all(Gh.sp),
+                    child: Text(widget.emptyText, style: const TextStyle(color: Gh.textSecondary)),
+                  )
+                : ListView.builder(
+                    itemCount: rows.length,
+                    itemExtent: Gh.rowHeight,
+                    itemBuilder: (_, i) {
+                      final r = rows[i];
+                      if (r is (String, String, int)) {
+                        final (title, key, count) = r;
+                        final named = groups.contains(key);
+                        final foldable = groups.isNotEmpty && !searching;
+                        final open = !_collapsed.contains(key);
+                        return InkWell(
+                          onTap: foldable ? () => _toggle(key) : null,
+                          onSecondaryTapUp: groups.isNotEmpty && widget.onGroupSecondary != null
+                              ? (d) => widget.onGroupSecondary!(key, d.globalPosition)
+                              : null,
+                          child: Container(
+                            alignment: Alignment.bottomLeft,
+                            padding: const EdgeInsets.fromLTRB(Gh.sp, 0, Gh.sp, 4),
+                            child: Row(
+                              children: [
+                                if (foldable) ...[
+                                  Icon(open ? Icons.expand_more : Icons.chevron_right, size: 16, color: Gh.textSecondary),
+                                  const SizedBox(width: 2),
+                                ],
+                                if (named && widget.groupIcon != null) ...[
+                                  Icon(widget.groupIcon!(key), size: 14, color: Gh.link),
+                                  const SizedBox(width: 6),
+                                ],
+                                Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
+                                if (foldable && !open)
+                                  Text(
+                                    '  $count',
+                                    style: const TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
+                                  ),
                               ],
-                              if (named && widget.groupIcon != null) ...[
-                                Icon(widget.groupIcon!(key), size: 14, color: Gh.link),
-                                const SizedBox(width: 6),
-                              ],
-                              Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
-                              if (foldable && !open)
-                                Text(
-                                  '  $count',
-                                  style: const TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
-                                ),
-                            ],
+                            ),
                           ),
+                        );
+                      }
+                      final item = r as String;
+                      return GhRow(
+                        selected: item == widget.selected,
+                        onTap: () => widget.onTap(item),
+                        onSecondary: widget.onSecondary == null ? null : (at) => widget.onSecondary!(item, at),
+                        child: Row(
+                          children: [
+                            Icon(widget.icon, size: 14, color: Gh.textSecondary),
+                            const SizedBox(width: Gh.sp),
+                            Expanded(child: Text(widget.label(item), overflow: TextOverflow.ellipsis)),
+                            ?widget.trailing?.call(item),
+                            if (item == widget.selected) ...[const SizedBox(width: 6), const Icon(Icons.check, size: 14)],
+                          ],
                         ),
                       );
-                    }
-                    final item = r as String;
-                    return GhRow(
-                      selected: item == widget.selected,
-                      onTap: () => widget.onTap(item),
-                      onSecondary: widget.onSecondary == null ? null : (at) => widget.onSecondary!(item, at),
-                      child: Row(
-                        children: [
-                          Icon(widget.icon, size: 14, color: Gh.textSecondary),
-                          const SizedBox(width: Gh.sp),
-                          Expanded(child: Text(widget.label(item), overflow: TextOverflow.ellipsis)),
-                          ?widget.trailing?.call(item),
-                          if (item == widget.selected) ...[const SizedBox(width: 6), const Icon(Icons.check, size: 14)],
-                        ],
-                      ),
-                    );
-                  },
-                ),
+                    },
+                  ),
+          ),
         ),
       ],
     );
