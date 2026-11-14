@@ -17,6 +17,25 @@ class SummaryException implements Exception {
   String toString() => message;
 }
 
+/// Una fila guardada en la API (para la tabla de resúmenes).
+class SummaryRow {
+  SummaryRow.fromJson(Map<String, dynamic> j)
+    : hash = j['hash'],
+      repo = j['repo'],
+      author = j['author'],
+      email = j['email'],
+      date = DateTime.parse(j['date']).toLocal(),
+      message = j['message'],
+      summary = j['summary'],
+      isMerge = j['is_merge'] == true;
+  final String hash, repo, author, email, message, summary;
+  final DateTime date;
+  final bool isMerge;
+
+  String get shortHash => hash.substring(0, 7);
+  String get title => summary.split('\n').first;
+}
+
 /// Habla con la API de resúmenes. Sin URL o sin token queda apagada.
 class SummaryApi {
   SummaryApi(String url, this.token) : base = url.trim().replaceAll(RegExp(r'/+$'), '');
@@ -44,10 +63,43 @@ class SummaryApi {
         'message': info.message,
         'parents': info.parents,
         // Los merges no van a la IA: no hace falta leer su diff.
-        'diff': info.parents > 1 ? '' : await git(['show', '--format=', '--no-color', c.hash], cwd: repo),
+        'diff': info.parents > 1 ? '' : _cap(await git(['show', '--format=', '--no-color', c.hash], cwd: repo)),
       });
     }
     return _cache[c.hash] = CommitSummary(j!['summary'] as String, isMerge: j['is_merge'] == true, truncated: j['truncated'] == true);
+  }
+
+  /// Propone título y descripción para commitear [diff] (lo marcado en
+  /// Cambios). [hint] es lo que el usuario cuenta que hizo (opcional); los
+  /// últimos mensajes del repo van para que siga su estilo.
+  Future<({String title, String description})> draftMessage(String repo, String diff, {String hint = ''}) async {
+    List<String> recent;
+    try {
+      recent = (await git(['log', '-n', '15', '--no-merges', '--format=%s'], cwd: repo)).split('\n').where((l) => l.isNotEmpty).toList();
+    } on GitException {
+      recent = []; // repo sin commits
+    }
+    final j = await _call('POST', '/commit-message', {'diff': _cap(diff), 'hint': hint, 'recent': recent});
+    return (title: j!['title'] as String, description: j['description'] as String);
+  }
+
+  /// Resúmenes guardados, más nuevos primero. [repo] vacío = todos los repos.
+  Future<List<SummaryRow>> search({String q = '', String repo = '', int offset = 0, int limit = 50}) async {
+    final query = Uri(queryParameters: {'q': q, 'repo': repo, 'offset': '$offset', 'limit': '$limit'}).query;
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 10);
+    try {
+      final req = await client.getUrl(Uri.parse('$base/summaries?$query'));
+      req.headers.set(HttpHeaders.authorizationHeader, 'Bearer $token');
+      final res = await req.close().timeout(const Duration(seconds: 30));
+      final text = await res.transform(utf8.decoder).join();
+      if (res.statusCode == 401) throw const SummaryException('La API rechazó el token (apiToken en los ajustes).');
+      if (res.statusCode != 200) throw SummaryException('La API respondió ${res.statusCode}');
+      return [for (final j in jsonDecode(text) as List) SummaryRow.fromJson(j as Map<String, dynamic>)];
+    } on SocketException {
+      throw const SummaryException('No se pudo conectar con la API de resúmenes.');
+    } finally {
+      client.close();
+    }
   }
 
   /// null = 404 (no existe todavía).
@@ -83,6 +135,12 @@ class SummaryApi {
     }
   }
 }
+
+/// La API usa solo el principio del diff (MAX_DIFF_CHARS); mandar un commit
+/// inicial de varios MB entero sería subirlo para nada. Este tope es mayor que
+/// el de la API, así ella sigue marcando `truncated`.
+const _maxDiffSent = 200000;
+String _cap(String diff) => diff.length > _maxDiffSent ? diff.substring(0, _maxDiffSent) : diff;
 
 /// Mensaje completo y cantidad de padres de un commit.
 Future<({String message, int parents})> commitInfo(String repo, String hash) async {

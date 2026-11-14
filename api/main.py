@@ -95,12 +95,10 @@ PROMPT = (
 )
 
 
-def _summarize(c: Commit) -> tuple[str, bool, int, int]:
-    """(resumen, truncado, tokens de entrada, tokens de salida)."""
+def _ask(system: str, user: str) -> tuple[str, int, int]:
+    """(texto, tokens de entrada, tokens de salida) de una pregunta a DeepSeek."""
     if not DEEPSEEK_API_KEY:
         raise HTTPException(503, "La API no tiene DEEPSEEK_API_KEY")
-    diff = c.diff[:MAX_DIFF_CHARS]
-    truncated = len(c.diff) > MAX_DIFF_CHARS
     client = anthropic.Anthropic(
         api_key=DEEPSEEK_API_KEY,
         base_url=DEEPSEEK_BASE_URL,
@@ -108,17 +106,51 @@ def _summarize(c: Commit) -> tuple[str, bool, int, int]:
         # El SDK mezcla ANTHROPIC_CUSTOM_HEADERS del entorno; nada de eso debe ir a DeepSeek.
         default_headers={"x-proxy-key": anthropic.Omit()},
     )
-    note = "\n\n[El diff se cortó por tamaño; resume con lo visible.]" if truncated else ""
     r = client.messages.create(
         model=DEEPSEEK_MODEL,
         max_tokens=DEEPSEEK_MAX_TOKENS,
-        system=PROMPT,
-        messages=[{"role": "user", "content": f"Mensaje:\n{c.message}\n\nDiff:\n{diff}{note}"}],
+        system=system,
+        messages=[{"role": "user", "content": user}],
     )
     text = "".join(b.text for b in r.content if b.type == "text").strip()
     if not text:
         raise HTTPException(502, "DeepSeek respondió sin texto")
-    return text, truncated, r.usage.input_tokens, r.usage.output_tokens
+    return text, r.usage.input_tokens, r.usage.output_tokens
+
+
+def _summarize(c: Commit) -> tuple[str, bool, int, int]:
+    """(resumen, truncado, tokens de entrada, tokens de salida)."""
+    truncated = len(c.diff) > MAX_DIFF_CHARS
+    note = "\n\n[El diff se cortó por tamaño; resume con lo visible.]" if truncated else ""
+    text, tin, tout = _ask(PROMPT, f"Mensaje:\n{c.message}\n\nDiff:\n{c.diff[:MAX_DIFF_CHARS]}{note}")
+    return text, truncated, tin, tout
+
+
+class Draft(BaseModel):
+    diff: str
+    hint: str = ""  # lo que el usuario cuenta de lo que hizo (opcional)
+    recent: list[str] = []  # últimos mensajes del repo, para seguir su estilo
+
+
+DRAFT_PROMPT = (
+    "Escribe el mensaje de commit para estos cambios (aún sin commitear). Responde SOLO con el "
+    "mensaje: primera línea de hasta 72 caracteres, una línea en blanco y luego de 0 a 5 viñetas "
+    "con '- ' que expliquen lo importante (omítelas si el cambio es trivial). Sigue el idioma y el "
+    "estilo de los mensajes recientes del repo (por ejemplo Conventional Commits si los usan); si no "
+    "hay, usa Conventional Commits en español. Si el usuario cuenta qué hizo, eso manda sobre tu "
+    "lectura del diff. Sin comillas, sin markdown extra, sin explicaciones."
+)
+
+
+@app.post("/commit-message", dependencies=[Depends(auth)])
+def commit_message(d: Draft):
+    """Propone título y descripción para un commit; no guarda nada."""
+    recent = "\n".join(f"- {m}" for m in d.recent[:15]) or "(ninguno)"
+    hint = f"Lo que dice el usuario que hizo: {d.hint.strip()}\n\n" if d.hint.strip() else ""
+    note = "\n\n[El diff se cortó por tamaño.]" if len(d.diff) > MAX_DIFF_CHARS else ""
+    text, tin, tout = _ask(DRAFT_PROMPT, f"Mensajes recientes del repo:\n{recent}\n\n{hint}Diff:\n{d.diff[:MAX_DIFF_CHARS]}{note}")
+    title, _, body = text.strip().strip("`").strip().partition("\n")
+    return {"title": title.strip(), "description": body.strip(), "tokens_in": tin, "tokens_out": tout}
 
 
 @app.get("/health")

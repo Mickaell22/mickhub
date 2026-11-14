@@ -9,6 +9,7 @@ import 'change_groups.dart';
 import 'change_groups_ui.dart';
 import 'avatar.dart';
 import 'summaries.dart';
+import 'summaries_pane.dart';
 import 'system.dart';
 import 'diff_view.dart';
 import 'git.dart';
@@ -142,6 +143,7 @@ class ChangesPane extends StatefulWidget {
     required this.trash,
     required this.editorCommand,
     this.account,
+    this.summaries,
   });
   final String repo;
   final String branch;
@@ -159,6 +161,9 @@ class ChangesPane extends StatefulWidget {
 
   /// Cuenta del repo: si tiene nombre y email, los commits se firman con ellos.
   final Account? account;
+
+  /// API de IA para escribir el mensaje del commit; null o apagada = sin botón.
+  final SummaryApi? summaries;
 
   @override
   State<ChangesPane> createState() => _ChangesPaneState();
@@ -189,6 +194,7 @@ class _ChangesPaneState extends State<ChangesPane> {
   final _summary = TextEditingController();
   final _description = TextEditingController();
   bool _committing = false;
+  bool _drafting = false; // la IA está escribiendo el mensaje
 
   @override
   void initState() {
@@ -1197,6 +1203,31 @@ class _ChangesPaneState extends State<ChangesPane> {
     ],
   );
 
+  /// Mensaje del commit con IA a partir de lo marcado, como Copilot. Antes
+  /// pregunta (opcional) qué se hizo; lo escrito en Resumen viene como pista.
+  Future<void> _draftMessage() async {
+    final api = widget.summaries;
+    if (api == null) return;
+    final hint = await askCommitHint(context, initial: _summary.text.trim());
+    if (hint == null || !mounted) return;
+    setState(() => _drafting = true);
+    try {
+      final (whole, parts) = _marked();
+      final diffs = [
+        for (final f in whole) await fileDiff(widget.repo, f),
+        for (final e in parts.entries) selectHunks(e.value.$1, e.value.$2) ?? '',
+      ];
+      final m = await api.draftMessage(widget.repo, diffs.join('\n'), hint: hint);
+      if (!mounted) return;
+      _summary.text = m.title;
+      _description.text = m.description;
+    } catch (e) {
+      if (mounted) _snack('No se pudo escribir el mensaje: $e');
+    } finally {
+      if (mounted) setState(() => _drafting = false);
+    }
+  }
+
   Future<void> _commit() async {
     setState(() => _committing = true);
     try {
@@ -1530,12 +1561,29 @@ class _ChangesPaneState extends State<ChangesPane> {
           const SizedBox(height: 6),
           TextField(
             controller: _summary,
+            enabled: !_drafting,
             style: const TextStyle(fontSize: Gh.fontSize),
-            decoration: const InputDecoration(hintText: 'Resumen (obligatorio)'),
+            decoration: InputDecoration(
+              hintText: _drafting ? 'La IA está escribiendo…' : 'Resumen (obligatorio)',
+              suffixIcon: !(widget.summaries?.enabled ?? false)
+                  ? null
+                  : _drafting
+                  ? const Padding(
+                      padding: EdgeInsets.all(10),
+                      child: SizedBox.square(dimension: 14, child: CircularProgressIndicator(strokeWidth: 2)),
+                    )
+                  : IconButton(
+                      tooltip: 'Escribir el mensaje con IA (solo lo marcado)',
+                      iconSize: 16,
+                      onPressed: checked == 0 ? null : _draftMessage,
+                      icon: const Icon(Icons.auto_awesome_outlined),
+                    ),
+            ),
           ),
           const SizedBox(height: Gh.sp),
           TextField(
             controller: _description,
+            enabled: !_drafting,
             minLines: 4,
             maxLines: 4,
             style: const TextStyle(fontSize: Gh.fontSize),

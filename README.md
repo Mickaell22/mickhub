@@ -18,11 +18,11 @@ Necesita `git` instalado; en Windows, con el Git Credential Manager (viene con G
 
 ## Atajos
 
-`Ctrl+T` repositorio · `Ctrl+B` rama · `Ctrl+Shift+N` nueva rama · `Ctrl+1`/`Ctrl+2` Cambios/Historial · `Ctrl+Shift+P` fetch/pull/push · `Ctrl+Enter` commit · `Ctrl+Shift+F` abrir carpeta · `Ctrl+Shift+A` abrir en el editor (con el archivo seleccionado) · `Ctrl+`` ` abrir en la terminal · `F5` refrescar · `Ctrl+/` todos los atajos.
+`Ctrl+T` repositorio · `Ctrl+B` rama · `Ctrl+Shift+N` nueva rama · `Ctrl+1`/`Ctrl+2`/`Ctrl+3` Cambios/Historial/Resúmenes · `Ctrl+Shift+P` fetch/pull/push · `Ctrl+Enter` commit · `Ctrl+Shift+F` abrir carpeta · `Ctrl+Shift+A` abrir en el editor (con el archivo seleccionado) · `Ctrl+`` ` abrir en la terminal · `F5` refrescar · `Ctrl+/` todos los atajos.
 
 ## Resúmenes con IA (opcional)
 
-Al abrir un commit en el Historial, MickHub muestra qué hizo de verdad, escrito por DeepSeek a partir del diff. Corre en una API propia (`api/`, FastAPI + Postgres) para que la key de DeepSeek no viaje a cada equipo; cada commit se resume una sola vez y los merges no gastan tokens.
+Al abrir un commit en el Historial, MickHub muestra qué hizo de verdad, escrito por DeepSeek a partir del diff. Corre en una API propia (`api/`, FastAPI + Postgres) para que la key de DeepSeek no viaje a cada equipo; cada commit se resume una sola vez y los merges no gastan tokens. La pestaña **Resúmenes** busca entre todo lo resumido, en el repo abierto o en todos, y resume los últimos 50 commits de una vez. En Cambios, el botón con chispas del campo Resumen escribe el mensaje del commit a partir de lo marcado (con una pista opcional de qué hiciste).
 
 1. Desplegar `api/` (en Railway: un servicio con la carpeta `api/` y un Postgres) con las variables de [`api/.env.example`](./api/.env.example).
 2. En el `settings.json` de MickHub, poner `apiUrl` (la URL de la API) y `apiToken` (el mismo `MICKHUB_API_TOKEN`). Vacíos, el panel no aparece.

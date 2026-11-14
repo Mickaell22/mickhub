@@ -14,6 +14,7 @@ import 'panes.dart';
 import 'repo_dialogs.dart';
 import 'settings.dart';
 import 'summaries.dart';
+import 'summaries_pane.dart';
 import 'system.dart';
 import 'theme.dart';
 import 'updater.dart';
@@ -35,7 +36,7 @@ Future<void> main() async {
 
 enum Foldout { none, repos, branches }
 
-enum RepoTab { changes, history }
+enum RepoTab { changes, history, summaries }
 
 /// Ventana principal con la disposición de GitHub Desktop: barra de 50 px con
 /// repositorio, rama y sincronización; abajo la columna lateral y el diff.
@@ -500,7 +501,7 @@ class _ShellState extends State<Shell> {
     ('Ctrl+T', 'Elegir repositorio'),
     ('Ctrl+B', 'Elegir rama'),
     ('Ctrl+Shift+N', 'Nueva rama local'),
-    ('Ctrl+1 / Ctrl+2', 'Ir a Cambios / Historial'),
+    ('Ctrl+1 / Ctrl+2 / Ctrl+3', 'Ir a Cambios / Historial / Resúmenes'),
     ('Ctrl+Shift+P', 'Fetch, pull o push (lo que diga el botón)'),
     ('Ctrl+Shift+F', 'Abrir la carpeta del repo'),
     ('Ctrl+Shift+A', 'Abrir el repo en el editor'),
@@ -521,6 +522,7 @@ class _ShellState extends State<Shell> {
         const SingleActivator(LogicalKeyboardKey.keyN, control: true, shift: true): _newBranch,
         const SingleActivator(LogicalKeyboardKey.digit1, control: true): () => setState(() => _tab = RepoTab.changes),
         const SingleActivator(LogicalKeyboardKey.digit2, control: true): () => setState(() => _tab = RepoTab.history),
+        const SingleActivator(LogicalKeyboardKey.digit3, control: true): () => setState(() => _tab = RepoTab.summaries),
         const SingleActivator(LogicalKeyboardKey.keyP, control: true, shift: true): () => _syncing ? null : _sync(),
         const SingleActivator(LogicalKeyboardKey.keyF, control: true, shift: true): () => _openFolder(repo),
         const SingleActivator(LogicalKeyboardKey.keyA, control: true, shift: true): () => _openEditor(repo),
@@ -1284,6 +1286,10 @@ class _ShellState extends State<Shell> {
       ),
       main: main,
     );
+    final api = SummaryApi(s.apiUrl, s.apiToken);
+    if (_tab == RepoTab.summaries && api.enabled) {
+      return SummariesPane(key: ValueKey(repo), repo: repo, api: api, repoId: repoId(_origins[repo], repo), layout: layout);
+    }
     return _tab == RepoTab.changes
         ? ChangesPane(
             key: ValueKey(repo),
@@ -1298,6 +1304,7 @@ class _ShellState extends State<Shell> {
             trash: s.trash,
             editorCommand: s.editorCommand,
             account: _account,
+            summaries: api,
           )
         : HistoryPane(
             key: ValueKey(repo),
@@ -1309,7 +1316,7 @@ class _ShellState extends State<Shell> {
             account: _account,
             originUrl: _origins[repo],
             editorCommand: s.editorCommand,
-            summaries: SummaryApi(s.apiUrl, s.apiToken),
+            summaries: api,
           );
   }
 
@@ -1322,7 +1329,7 @@ class _ShellState extends State<Shell> {
           alignment: Alignment.center,
           decoration: BoxDecoration(
             border: Border(
-              right: t == RepoTab.changes ? Gh.divider : BorderSide.none,
+              right: t != RepoTab.summaries ? Gh.divider : BorderSide.none,
               bottom: _tab == t ? const BorderSide(color: Gh.blue, width: 3) : Gh.divider,
             ),
           ),
@@ -1332,7 +1339,13 @@ class _ShellState extends State<Shell> {
     );
     return SizedBox(
       height: Gh.tabBarHeight,
-      child: Row(children: [tab(RepoTab.changes, 'Cambios'), tab(RepoTab.history, 'Historial')]),
+      child: Row(
+        children: [
+          tab(RepoTab.changes, 'Cambios'),
+          tab(RepoTab.history, 'Historial'),
+          if (SummaryApi(s.apiUrl, s.apiToken).enabled) tab(RepoTab.summaries, 'Resúmenes'),
+        ],
+      ),
     );
   }
 
