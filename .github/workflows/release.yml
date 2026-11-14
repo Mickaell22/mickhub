@@ -1,6 +1,7 @@
 # Ejecutables portables (sin instalador) al subir un tag vX.Y.Z:
 #   mickhub-linux-x64.tar.gz   -> descomprimir y abrir MickHub/mickhub
 #   mickhub-windows-x64.zip    -> descomprimir y abrir MickHub\MickHub.exe
+#   mickhub-cli-*              -> el comando `mickhub` para Claude Code (cli/); lo baja claude-config
 # Los nombres no llevan versión para que releases/latest/download/... no se rompa.
 # La versión y el repo se pasan con --dart-define: así el actualizador de la app
 # sabe qué versión es y dónde buscar las nuevas (en builds locales queda apagado).
@@ -33,10 +34,14 @@ jobs:
           flutter build linux --release --dart-define=MICKHUB_VERSION=$GITHUB_REF_NAME --dart-define=MICKHUB_REPO=$GITHUB_REPOSITORY
           mkdir -p dist && cp -r build/linux/x64/release/bundle dist/MickHub
           tar -C dist -czf mickhub-linux-x64.tar.gz MickHub
+      - working-directory: cli
+        run: dart pub get && dart compile exe bin/mickhub.dart -o ../app/mickhub-cli-linux-x64
       - uses: actions/upload-artifact@v4
         with:
           name: linux
-          path: app/mickhub-linux-x64.tar.gz
+          path: |
+            app/mickhub-linux-x64.tar.gz
+            app/mickhub-cli-linux-x64
 
   windows:
     runs-on: windows-latest
@@ -54,10 +59,17 @@ jobs:
           New-Item -ItemType Directory dist | Out-Null
           Copy-Item -Recurse build/windows/x64/runner/Release dist/MickHub
           Compress-Archive -Path dist/MickHub -DestinationPath mickhub-windows-x64.zip
+      - working-directory: cli
+        shell: pwsh
+        run: |
+          dart pub get
+          dart compile exe bin/mickhub.dart -o ../app/mickhub-cli-windows-x64.exe
       - uses: actions/upload-artifact@v4
         with:
           name: windows
-          path: app/mickhub-windows-x64.zip
+          path: |
+            app/mickhub-windows-x64.zip
+            app/mickhub-cli-windows-x64.exe
 
   release:
     needs: [linux, windows]
@@ -66,9 +78,9 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
-      - run: sha256sum mickhub-linux-x64.tar.gz mickhub-windows-x64.zip > SHA256SUMS.txt
+      - run: sha256sum mickhub-linux-x64.tar.gz mickhub-windows-x64.zip mickhub-cli-linux-x64 mickhub-cli-windows-x64.exe > SHA256SUMS.txt
       - env:
           GH_TOKEN: ${{ github.token }}
         run: >
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "MickHub $GITHUB_REF_NAME"
-          --generate-notes mickhub-linux-x64.tar.gz mickhub-windows-x64.zip SHA256SUMS.txt
+          --generate-notes mickhub-linux-x64.tar.gz mickhub-windows-x64.zip mickhub-cli-linux-x64 mickhub-cli-windows-x64.exe SHA256SUMS.txt

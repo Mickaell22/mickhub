@@ -339,11 +339,27 @@ Future<void> _commit(String repo, List<String> rest) async {
     identity: _account(repo, origin)?.identityArgs ?? const [],
     partial: partial,
   );
-  await _locked(repo, (g, _) async => g.forget(whole.map((f) => f.path)));
+  final hash = (await git(['rev-parse', 'HEAD'], cwd: repo)).trim();
+  String? renamed;
+  await _locked(repo, (g, _) async {
+    g.recordCommit(hash, {
+      group: [...whole.map((f) => f.path), ...partial.keys],
+    }); // el grupo viaja con el commit (Historial)
+    g.forget(whole.map((f) => f.path));
+    // Un grupo que llegó al commit sin nombre toma el del commit.
+    if (opt == null && _autoName.hasMatch(group)) {
+      final title = messages.first.trim();
+      var name = title.contains(': ') ? title.substring(title.indexOf(': ') + 2) : title;
+      if (name.length > 40) name = '${name.substring(0, 39)}…';
+      g.names.contains(name) ? g.merge(group, name) : g.rename(group, name);
+      renamed = name;
+    }
+  });
   stdout.write(await git(['log', '-1', '--format=%h %s'], cwd: repo));
   stdout.writeln(
     '${whole.length + partial.length} archivo(s) del grupo "$group"${partial.isEmpty ? '' : ' (${partial.length} en parte)'}.',
   );
+  if (renamed != null) stdout.writeln('El grupo no tenía nombre: ahora se llama "$renamed" (`mickhub grupo` lo cambia).');
 }
 
 Future<void> _push(String repo, List<String> rest) async {
@@ -425,20 +441,40 @@ Future<void> _hook() async {
     // En un Bash, el repo de la sesión y los de cada `cd`/`-C` del comando.
     final dirs = path != null ? [File(path).parent.path] : _dirs(cwd, toolInput['command'] as String? ?? '');
     final seen = <String>{};
+    final created = <String>[];
     for (final d in dirs) {
       final repo = await _toplevel(d);
       if (repo == null || !repos.contains(_norm(repo)) || !seen.add(_norm(repo))) continue;
-      await _track(repo, path == null ? null : _relative(repo, path), event as String?, session);
+      final g = await _track(repo, path == null ? null : _relative(repo, path), event as String?, session);
+      if (g != null) created.add('"$g" (en ${repo.split(RegExp(r'[\\/]')).last})');
+    }
+    if (created.isNotEmpty) {
+      // Para que el grupo no quede como "Sesión a3bf": Claude ya sabe en qué trabaja.
+      stdout.writeln(
+        jsonEncode({
+          'hookSpecificOutput': {
+            'hookEventName': 'PostToolUse',
+            'additionalContext':
+                'MickHub: lo que editas cae en tu grupo ${created.join(', ')}. Ponle nombre según la tarea '
+                'con `mickhub grupo "<tarea>"` desde esa carpeta (si ya existe un grupo con ese nombre, te unes a él).',
+          },
+        }),
+      );
     }
   } catch (_) {
     // el hook nunca corta el trabajo de Claude
   }
 }
 
+/// Nombre que pone [ChangeGroups.sessionGroup] mientras Claude no elige uno.
+final _autoName = RegExp(r'^Sesión [0-9a-zA-Z-]{1,4}( \(\d+\))?$');
+
 /// Foto antes de la herramienta y reparto después (ver [_hook]). [rel] es el
-/// archivo que edita (null = un Bash: todo el repo).
-Future<void> _track(String repo, String? rel, String? event, String session) async {
+/// archivo que edita (null = un Bash: todo el repo). Devuelve el grupo si lo
+/// acaba de crear (para pedirle a Claude que lo nombre).
+Future<String?> _track(String repo, String? rel, String? event, String session) async {
   final snapFile = File('${(await ChangeGroups.dir(repo)).path}/sesiones/$session.json');
+  String? created;
 
   if (event == 'PreToolUse') {
     // Foto de los bloques de antes: lo que aparezca después es de esta sesión.
@@ -446,7 +482,7 @@ Future<void> _track(String repo, String? rel, String? event, String session) asy
       for (final f in await status(repo))
         if (rel == null || f.path == rel) f,
     ];
-    if (files.length > 300) return; // ponytail: repo con miles de cambios (build sin ignorar); no se reparte
+    if (files.length > 300) return null; // ponytail: repo con miles de cambios (build sin ignorar); no se reparte
     final diffs = await _diffs(repo, files);
     await _locked(repo, (_, _) async {
       final snap = _readSnap(snapFile);
@@ -464,7 +500,7 @@ Future<void> _track(String repo, String? rel, String? event, String session) asy
       for (final f in await status(repo))
         if (rel == null || f.path == rel) f,
     ];
-    if (files.length > 300) return;
+    if (files.length > 300) return null;
     final diffs = await _diffs(repo, files);
     await _locked(repo, (g, _) async {
       final snap = _readSnap(snapFile);
@@ -474,7 +510,9 @@ Future<void> _track(String repo, String? rel, String? event, String session) asy
         if (known == null && snap['all'] != true) continue; // sin foto de antes: no se adivina
         final before = {...?known?.cast<String>()};
         if (hunkKeys(diffs[f.path] ?? '').every(before.contains)) continue;
+        final isNew = !g.sessions.containsKey(session);
         g.claim(f.path, diffs[f.path] ?? '', before, g.sessionGroup(session));
+        if (isNew) created = g.sessions[session];
       }
       if (rel == null) {
         snapFile.deleteSync();
@@ -484,6 +522,7 @@ Future<void> _track(String repo, String? rel, String? event, String session) asy
       }
     });
   }
+  return created;
 }
 
 /// La carpeta actual y las de cada `cd <dir>` o `git -C <dir>` del comando.

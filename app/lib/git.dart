@@ -493,6 +493,15 @@ Future<void> revertCommit(String repo, String hash, {List<String> identity = con
 
 /// Deshace el último commit sin perder sus cambios: vuelven a Cambios. Solo
 /// tiene sentido si todavía no se subió.
+/// Commits de HEAD que no están en ningún remoto (sin subir); sirve también sin upstream.
+Future<Set<String>> unpushedCommits(String repo) async {
+  try {
+    return (await git(['rev-list', 'HEAD', '--not', '--remotes'], cwd: repo, env: readOnly)).split('\n').where((l) => l.isNotEmpty).toSet();
+  } on GitException {
+    return {}; // repo sin commits
+  }
+}
+
 Future<void> undoLastCommit(String repo) => git(['reset', '--soft', 'HEAD~1'], cwd: repo);
 
 // --- Conflictos -----------------------------------------------------------------

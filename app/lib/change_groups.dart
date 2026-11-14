@@ -25,11 +25,13 @@ class ChangeGroups {
     Map<String, Map<String, String>>? hunks,
     Set<String>? collapsed,
     Map<String, String>? sessions,
+    Map<String, Map<String, List<String>>>? commits,
   }) : names = names ?? [],
        files = files ?? {},
        hunks = hunks ?? {},
        collapsed = collapsed ?? {},
-       sessions = sessions ?? {};
+       sessions = sessions ?? {},
+       commits = commits ?? {};
 
   /// Grupos en el orden en que se muestran.
   List<String> names;
@@ -52,6 +54,33 @@ class ChangeGroups {
   /// cada sesión cae solo en su grupo, así dos sesiones a la vez no se mezclan.
   Map<String, String> sessions;
 
+  /// Hash de commit -> (grupo -> archivos suyos que entraron). El grupo "viaja"
+  /// con el commit: el Historial muestra sus archivos agrupados aunque ya esté
+  /// subido, y el grupo no se ve vacío mientras tenga commits sin subir. Se
+  /// conserva aunque el grupo se borre.
+  Map<String, Map<String, List<String>>> commits;
+
+  /// Anota qué archivos de cada grupo entraron en [hash] ("Sin grupo" no se anota).
+  // ponytail: solo los últimos 5000 commits; los más viejos pierden la etiqueta.
+  void recordCommit(String hash, Map<String, Iterable<String>> byGroup) {
+    final m = {
+      for (final e in byGroup.entries)
+        if (e.key.isNotEmpty) e.key: e.value.toSet().toList(),
+    };
+    if (m.isEmpty) return;
+    commits[hash] = m;
+    while (commits.length > 5000) {
+      commits.remove(commits.keys.first);
+    }
+  }
+
+  void _relabelCommits(String from, String to) {
+    for (final m in commits.values) {
+      final moved = m.remove(from);
+      if (moved != null) m[to] = {...?m[to], ...moved}.toList();
+    }
+  }
+
   factory ChangeGroups.fromJson(Map<String, dynamic> j) => ChangeGroups(
     names: List<String>.from(j['groups'] ?? const []),
     active: j['active'],
@@ -59,15 +88,28 @@ class ChangeGroups {
     hunks: {for (final e in ((j['hunks'] ?? const {}) as Map).entries) e.key as String: Map<String, String>.from(e.value as Map)},
     collapsed: Set<String>.from(j['collapsed'] ?? const []),
     sessions: Map<String, String>.from(j['sessions'] ?? const {}),
-  );
+    commits: {
+      for (final e in ((j['commits'] ?? const {}) as Map).entries)
+        e.key as String: e.value is List
+            ? {for (final g in e.value as List) g as String: <String>[]} // formato del primer día: solo nombres
+            : {for (final g in (e.value as Map).entries) g.key as String: List<String>.from(g.value as List)},
+    },
+  ).._extra = Map.of(j);
+
+  /// Todo lo leído del JSON, también claves que esta versión no conoce: se
+  /// vuelven a escribir para no borrarlas (una app vieja borraba `sessions` y
+  /// `commits` de `mickhub` al guardar).
+  Map<String, dynamic> _extra = {};
 
   Map<String, dynamic> toJson() => {
+    ..._extra,
     'groups': names,
     'active': active,
     'files': files,
     'hunks': hunks,
     'collapsed': collapsed.toList(),
     'sessions': sessions,
+    'commits': commits,
   };
 
   /// Carpeta `<.git>/mickhub` del repo (grupos, candado y fotos de sesiones).
@@ -199,6 +241,7 @@ class ChangeGroups {
     names = [for (final n in names) n == from ? to : n];
     if (active == from) active = to;
     sessions.updateAll((_, g) => g == from ? to : g);
+    _relabelCommits(from, to);
     files.updateAll((_, g) => g == from ? to : g);
     for (final m in hunks.values) {
       m.updateAll((_, g) => g == from ? to : g);
@@ -226,6 +269,7 @@ class ChangeGroups {
       m.updateAll((_, g) => g == from ? to : g);
     }
     sessions.updateAll((_, g) => g == from ? to : g);
+    _relabelCommits(from, to);
     names.remove(from);
     if (active == from) active = to;
     collapsed.remove(from);

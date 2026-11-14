@@ -175,4 +175,50 @@ void claimTests() {
     expect(g.hunkGroups('f.dart', two), [s2, s2]);
     expect(g.sessions['aaaa1111'], s2);
   });
+
+  test('el grupo viaja con el commit (con sus archivos) y sigue al renombrar o unir', () {
+    final g = ChangeGroups(names: ['A', 'B']);
+    g.recordCommit('h1', {
+      'A': ['a.dart', 'a.dart'],
+      '': ['x.dart'],
+    });
+    g.recordCommit('h2', {
+      '': ['y.dart'],
+    }); // solo "Sin grupo": no se anota
+    expect(g.commits, {
+      'h1': {
+        'A': ['a.dart'],
+      },
+    });
+    g.rename('A', 'Login');
+    expect(g.commits['h1'], {
+      'Login': ['a.dart'],
+    });
+    g.recordCommit('h3', {
+      'Login': ['l.dart'],
+      'B': ['b.dart'],
+    });
+    g.merge('Login', 'B');
+    expect(g.commits['h3'], {
+      'B': ['b.dart', 'l.dart'],
+    });
+    g.remove('B'); // borrar el grupo no borra la etiqueta del commit
+    expect(g.commits['h1'], {
+      'B': ['a.dart'],
+    });
+    expect(ChangeGroups.fromJson(g.toJson()).commits, g.commits);
+    // Una clave que esta versión no conoce sobrevive a leer y guardar.
+    expect(ChangeGroups.fromJson({'futuro': 1}).toJson()['futuro'], 1);
+    // El formato del primer día (solo nombres) se sigue leyendo.
+    expect(
+      ChangeGroups.fromJson({
+        'commits': {
+          'h': ['X'],
+        },
+      }).commits,
+      {
+        'h': {'X': <String>[]},
+      },
+    );
+  });
 }

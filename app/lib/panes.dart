@@ -246,6 +246,9 @@ class _ChangesPaneState extends State<ChangesPane> {
 
   bool _loading = false, _reload = false;
 
+  /// Commits sin subir: la cabecera de un grupo cuenta los suyos.
+  Set<String> _unpushed = {};
+
   /// Sube con cada cambio de grupos hecho desde la app. Una lectura que empezó
   /// antes trae grupos viejos: no se aplica ni se guarda (si no, el grupo que se
   /// acaba de contraer se volvía a abrir solo, o al revés).
@@ -297,6 +300,10 @@ class _ChangesPaneState extends State<ChangesPane> {
         }
         _snapshots[widget.repo] = r;
         setState(() => _apply(r));
+        if (groups.commits.isNotEmpty) {
+          final up = await unpushedCommits(widget.repo);
+          if (mounted) setState(() => _unpushed = up);
+        }
       } while (_reload);
     } finally {
       _loading = false;
@@ -1307,6 +1314,10 @@ class _ChangesPaneState extends State<ChangesPane> {
     setState(() => _committing = true);
     try {
       final (whole, parts) = _marked();
+      final used = <String, List<String>>{};
+      for (final r in _rows) {
+        if (_included(r.$1, r.$2)) used.putIfAbsent(r.$1, () => []).add(r.$2.path);
+      }
       await commit(
         widget.repo,
         [
@@ -1317,6 +1328,8 @@ class _ChangesPaneState extends State<ChangesPane> {
         identity: widget.account?.identityArgs ?? const [],
         partial: {for (final e in parts.entries) e.key: selectHunks(e.value.$1, e.value.$2)!},
       );
+      // El grupo viaja con el commit (Historial, y la cabecera no queda vacía).
+      _groups.recordCommit((await git(['rev-parse', 'HEAD'], cwd: widget.repo)).trim(), used);
       await _forget(whole.map((f) => f.path)); // si vuelven a cambiar, es otro cambio
       _summary.clear();
       _description.clear();
@@ -1378,6 +1391,9 @@ class _ChangesPaneState extends State<ChangesPane> {
 
   /// Encabezado de un grupo: se contrae con un clic, su casilla marca o
   /// desmarca todo el grupo para el commit y el clic derecho abre sus acciones.
+  int _groupCommits(String group) =>
+      group.isEmpty ? 0 : _groups.commits.entries.where((e) => e.value.containsKey(group) && _unpushed.contains(e.key)).length;
+
   Widget _groupHeader(String group, List<(String, FileChange)> rows) {
     final open = !_groups.collapsed.contains(group);
     final inc = rows.where((r) => _included(r.$1, r.$2)).length;
@@ -1415,6 +1431,19 @@ class _ChangesPaneState extends State<ChangesPane> {
                 const Tooltip(
                   message: 'Grupo activo: lo nuevo que toques cae aquí',
                   child: Icon(Icons.star, size: 14, color: Gh.modified),
+                ),
+              if (_groupCommits(group) case final n when n > 0)
+                Tooltip(
+                  message: n == 1 ? '1 commit de este grupo sin subir' : '$n commits de este grupo sin subir',
+                  child: Row(
+                    children: [
+                      const Icon(Icons.arrow_upward, size: 12, color: Gh.textSecondary),
+                      Text(
+                        '$n',
+                        style: const TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
+                      ),
+                    ],
+                  ),
                 ),
               Text(
                 '  ${rows.length}',
@@ -1741,6 +1770,7 @@ class _HistoryPaneState extends State<HistoryPane> {
   CommitSummary? _summary;
   ({Commit? before, Commit? after}) _related = (before: null, after: null); // mismo trabajo en otros commits
   String? _summaryError; // null = cargando o sin pedir
+  Map<String, Map<String, List<String>>> _commitGroups = {}; // hash -> grupo -> sus archivos en el commit
 
   @override
   void initState() {
@@ -1763,10 +1793,11 @@ class _HistoryPaneState extends State<HistoryPane> {
   }
 
   Future<void> _load() async {
-    final commits = await log(widget.repo);
+    final (commits, groups) = await (log(widget.repo), ChangeGroups.load(widget.repo)).wait;
     if (!mounted) return;
     setState(() {
       _commits = commits;
+      _commitGroups = groups.commits;
       _hasMore = commits.length == logPage;
     });
     if (_query.trim().isNotEmpty) _search(_query);
@@ -1802,36 +1833,84 @@ class _HistoryPaneState extends State<HistoryPane> {
     if (mounted && q == _query) setState(() => _results = r);
   }
 
-  Widget _fileList(List<FileChange> files) => files.isEmpty
-      ? const Padding(
-          padding: EdgeInsets.all(Gh.sp),
-          child: Text('Ningún archivo coincide.', style: TextStyle(color: Gh.textSecondary)),
-        )
-      : ListView.builder(
-          itemCount: files.length,
-          itemExtent: Gh.rowHeight,
-          itemBuilder: (_, i) {
-            final f = files[i];
-            return GhRow(
-              selected: f == _file,
-              onTap: () => _selectFile(f),
-              onSecondary: (at) => _commitFileMenu(f, at),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Tooltip(
-                      message: f.path,
-                      waitDuration: const Duration(seconds: 1),
-                      child: Text(f.path, overflow: TextOverflow.ellipsis),
-                    ),
+  /// Archivos del commit. Si se hizo con grupos de cambios van agrupados como
+  /// en Cambios (un commit grande se lee por partes); un archivo repartido sale
+  /// en cada grupo.
+  Widget _fileList(List<FileChange> files) {
+    if (files.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.all(Gh.sp),
+        child: Text('Ningún archivo coincide.', style: TextStyle(color: Gh.textSecondary)),
+      );
+    }
+    final groups = _commitGroups[_selected?.hash] ?? const <String, List<String>>{};
+    final items = <Object>[];
+    if (groups.values.any((ps) => ps.isNotEmpty)) {
+      final placed = <String>{};
+      for (final e in groups.entries) {
+        final mine = [
+          for (final f in files)
+            if (e.value.contains(f.path)) f,
+        ];
+        if (mine.isEmpty) continue;
+        items.addAll([(e.key, mine.length), ...mine]);
+        placed.addAll(mine.map((f) => f.path));
+      }
+      final rest = files.where((f) => !placed.contains(f.path)).toList();
+      if (rest.isNotEmpty) items.addAll([('', rest.length), ...rest]);
+    } else {
+      items.addAll(files);
+    }
+    return ListView.builder(
+      itemCount: items.length,
+      itemExtent: Gh.rowHeight,
+      itemBuilder: (_, i) {
+        final item = items[i];
+        if (item case (final String g, final int n)) {
+          return Container(
+            color: Gh.box,
+            padding: const EdgeInsets.symmetric(horizontal: Gh.sp),
+            child: Row(
+              children: [
+                Icon(g.isEmpty ? Icons.folder_off_outlined : Icons.folder_special_outlined, size: 14, color: Gh.link),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    g.isEmpty ? 'Sin grupo' : g,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontWeight: FontWeight.w600),
                   ),
-                  const SizedBox(width: 4),
-                  statusIcon(f.status),
-                ],
+                ),
+                Text(
+                  '$n',
+                  style: const TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
+                ),
+              ],
+            ),
+          );
+        }
+        final f = item as FileChange;
+        return GhRow(
+          selected: f == _file,
+          onTap: () => _selectFile(f),
+          onSecondary: (at) => _commitFileMenu(f, at),
+          child: Row(
+            children: [
+              Expanded(
+                child: Tooltip(
+                  message: f.path,
+                  waitDuration: const Duration(seconds: 1),
+                  child: Text(f.path, overflow: TextOverflow.ellipsis),
+                ),
               ),
-            );
-          },
+              const SizedBox(width: 4),
+              statusIcon(f.status),
+            ],
+          ),
         );
+      },
+    );
+  }
 
   Future<void> _select(Commit c) async {
     if (_selected?.hash != c.hash) _fileFilter.clear();
@@ -2065,6 +2144,11 @@ class _HistoryPaneState extends State<HistoryPane> {
                         ],
                       ),
                     ),
+                    for (final g in _commitGroups[c.hash]?.keys ?? const <String>[])
+                      Padding(
+                        padding: const EdgeInsets.only(left: 4),
+                        child: Tooltip(message: 'Grupo de cambios', child: groupChip(g)),
+                      ),
                     if (unpushed.contains(c.hash))
                       const Tooltip(
                         message: 'Sin subir',
@@ -2222,3 +2306,27 @@ bool matchesCommit(Commit c, String query) {
   if (q.isEmpty) return true;
   return c.hash.startsWith(q) || c.summary.toLowerCase().contains(q) || c.author.toLowerCase().contains(q);
 }
+
+/// Etiqueta chica con el nombre de un grupo de cambios.
+Widget groupChip(String name) => Container(
+  constraints: const BoxConstraints(maxWidth: 140),
+  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+  decoration: BoxDecoration(
+    border: Border.all(color: Gh.border),
+    borderRadius: BorderRadius.circular(Gh.radius),
+  ),
+  child: Row(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      const Icon(Icons.folder_special_outlined, size: 11, color: Gh.link),
+      const SizedBox(width: 3),
+      Flexible(
+        child: Text(
+          name,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
+        ),
+      ),
+    ],
+  ),
+);
