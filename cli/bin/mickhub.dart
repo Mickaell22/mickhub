@@ -362,10 +362,11 @@ Future<void> _pull(String repo) async {
 // --- Hooks de Claude Code -----------------------------------------------------------------
 
 /// `git commit` o `git push` (con o sin opciones antes del subcomando).
-/// Órdenes de subir: "haz push", "dale push", "commit y push", "pushea", "súbelo".
+/// Órdenes de subir: "haz push", "dale push", "commit y push", "pushea", "súbelo",
+/// "sube lo de lucky", "sube los cambios", "en el repo de github", "a github".
 /// Una palabra suelta no basta: "solo commit y no push" no debe dar permiso.
 final _pushOrder = RegExp(
-  r'\b(haz|hazle|has|dale|hacer|y)\s+(el\s+|un\s+)?push\b|\bpushea\w*|\bs[uú]bel[oa]s?\b|\bs[uú]be\s+(los\s+cambios|todo|eso|esto)\b',
+  r'\b(haz|hazle|has|dale|hacer|y)\s+(el\s+|un\s+)?push\b|\bpushea\w*|\bs[uú]bel[oa]s?\b|\bs[uú]be\s+(lo|los|todo|eso|esto)\b|\b(a|al|en\s+el)\s+(repo\s+(de\s+)?)?github\b',
   caseSensitive: false,
 );
 
