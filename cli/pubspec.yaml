@@ -1,0 +1,9 @@
+name: mickhub_cli
+description: "mickhub: MickHub desde la terminal, para Claude Code."
+publish_to: 'none'
+
+environment:
+  sdk: ^3.10.7
+
+dependencies:
+  crypto: ^3.0.7

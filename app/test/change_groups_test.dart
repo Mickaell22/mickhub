@@ -25,6 +25,7 @@ Future<(String, List<String>)> repoWithTwoHunks() async {
 }
 
 void main() {
+  claimTests();
   test('hunkKeys reconoce un bloque aunque cambie de línea', () {
     const a = '@@ -1,3 +1,3 @@\n x\n-a\n+b\n@@ -20,3 +20,3 @@\n y\n-c\n+d\n';
     const moved = '@@ -5,3 +5,3 @@\n z\n-a\n+b\n';
@@ -147,5 +148,31 @@ void main() {
     final now = File('$r/app.dart').readAsStringSync();
     expect(now, contains('barra de búsqueda'));
     expect(now, isNot(contains('implementación grande')));
+  });
+}
+
+// Dos sesiones de Claude Code tocando el mismo archivo: cada una se queda con
+// sus bloques y no se lleva lo que ya estaba.
+void claimTests() {
+  const one = '@@ -1 +1 @@\n-a\n+A\n';
+  const two = '@@ -1 +1 @@\n-a\n+A\n@@ -9 +9 @@\n-z\n+Z\n';
+  test('claim: bloque nuevo a la sesión, lo de antes queda en su grupo', () {
+    final g = ChangeGroups();
+    final s1 = g.sessionGroup('aaaa1111'), s2 = g.sessionGroup('bbbb2222');
+    expect([s1, s2], ['Sesión aaaa', 'Sesión bbbb']);
+    expect(g.claim('f.dart', one, {}, s1), isTrue);
+    expect(g.groupOf('f.dart'), s1);
+    expect(g.hunks.containsKey('f.dart'), isFalse);
+    g.claim('f.dart', two, hunkKeys(one).toSet(), s2);
+    expect(g.hunkGroups('f.dart', two), [s1, s2]);
+    // Un cambio del dueño que ya estaba (sin grupo) no se lo lleva la sesión.
+    g.claim('g.dart', two, hunkKeys(one).toSet(), s1);
+    expect(g.hunkGroups('g.dart', two), ['', s1]);
+    // Renombrar el grupo sigue a la sesión.
+    g.rename(s1, 'Login');
+    expect(g.sessions['aaaa1111'], 'Login');
+    g.merge('Login', s2);
+    expect(g.hunkGroups('f.dart', two), [s2, s2]);
+    expect(g.sessions['aaaa1111'], s2);
   });
 }

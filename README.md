@@ -27,4 +27,14 @@ Al abrir un commit en el Historial, MickHub muestra qué hizo de verdad, escrito
 1. Desplegar `api/` (en Railway: un servicio con la carpeta `api/` y un Postgres) con las variables de [`api/.env.example`](./api/.env.example).
 2. En el `settings.json` de MickHub, poner `apiUrl` (la URL de la API) y `apiToken` (el mismo `MICKHUB_API_TOKEN`). Vacíos, el panel no aparece.
 
+## Claude Code por MickHub (opcional)
+
+El comando `mickhub` (en `cli/`) le da a cada sesión de Claude Code su propio grupo de cambios: lo que edita cae solo en su grupo, aunque haya varias sesiones en el mismo repo o incluso en el mismo archivo, y `mickhub commit` commitea solo ese grupo con la cuenta del repo. La app muestra los grupos en vivo.
+
+```sh
+cd cli && dart pub get && dart compile exe bin/mickhub.dart -o ~/.local/bin/mickhub
+```
+
+Luego, en `~/.claude/settings.json`, un hook `PreToolUse` y otro `PostToolUse` con `"matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit"` y `"command": "mickhub hook"`. Con eso, en los repos de MickHub, `git commit` y `git push` directos quedan bloqueados y Claude usa `mickhub commit` / `mickhub push`. `mickhub --help` lista el resto.
+
 Estado: en desarrollo (v1). Ya reemplaza a GitHub Desktop en lo diario: cambios, commit, historial con búsqueda, conflictos, ramas locales, apartados, candado de cambios locales y cuentas de GitHub y Azure DevOps a la vez. Detalles en [CLAUDE.md](./CLAUDE.md).

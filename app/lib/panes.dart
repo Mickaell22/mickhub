@@ -203,6 +203,30 @@ class _ChangesPaneState extends State<ChangesPane> {
     final snap = _snapshots[widget.repo];
     if (snap != null) _apply(snap);
     _load();
+    _watchGroups();
+  }
+
+  // Claude Code (`mickhub`) reparte cambios en grupos.json mientras la app está
+  // abierta: se relee solo, sin F5.
+  StreamSubscription<FileSystemEvent>? _groupsWatch;
+  Timer? _groupsDebounce;
+
+  Future<void> _watchGroups() async {
+    try {
+      final sub = await ChangeGroups.watch(widget.repo, () {
+        _groupsDebounce?.cancel();
+        _groupsDebounce = Timer(const Duration(milliseconds: 250), () {
+          if (mounted) _load();
+        });
+      });
+      if (mounted) {
+        _groupsWatch = sub;
+      } else {
+        sub.cancel();
+      }
+    } catch (_) {
+      // sin carpeta .git legible: queda el F5 de siempre
+    }
   }
 
   @override
@@ -213,6 +237,8 @@ class _ChangesPaneState extends State<ChangesPane> {
 
   @override
   void dispose() {
+    _groupsWatch?.cancel();
+    _groupsDebounce?.cancel();
     _summary.dispose();
     _description.dispose();
     super.dispose();

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -23,10 +24,12 @@ class ChangeGroups {
     Map<String, String>? files,
     Map<String, Map<String, String>>? hunks,
     Set<String>? collapsed,
+    Map<String, String>? sessions,
   }) : names = names ?? [],
        files = files ?? {},
        hunks = hunks ?? {},
-       collapsed = collapsed ?? {};
+       collapsed = collapsed ?? {},
+       sessions = sessions ?? {};
 
   /// Grupos en el orden en que se muestran.
   List<String> names;
@@ -45,18 +48,43 @@ class ChangeGroups {
   /// Grupos contraídos en la lista ('' = "Sin grupo").
   Set<String> collapsed;
 
+  /// Sesión de Claude Code -> su grupo (`bin/mickhub.dart`): lo que edita
+  /// cada sesión cae solo en su grupo, así dos sesiones a la vez no se mezclan.
+  Map<String, String> sessions;
+
   factory ChangeGroups.fromJson(Map<String, dynamic> j) => ChangeGroups(
     names: List<String>.from(j['groups'] ?? const []),
     active: j['active'],
     files: Map<String, String>.from(j['files'] ?? const {}),
     hunks: {for (final e in ((j['hunks'] ?? const {}) as Map).entries) e.key as String: Map<String, String>.from(e.value as Map)},
     collapsed: Set<String>.from(j['collapsed'] ?? const []),
+    sessions: Map<String, String>.from(j['sessions'] ?? const {}),
   );
 
-  Map<String, dynamic> toJson() => {'groups': names, 'active': active, 'files': files, 'hunks': hunks, 'collapsed': collapsed.toList()};
+  Map<String, dynamic> toJson() => {
+    'groups': names,
+    'active': active,
+    'files': files,
+    'hunks': hunks,
+    'collapsed': collapsed.toList(),
+    'sessions': sessions,
+  };
 
-  static Future<File> _file(String repo) async =>
-      File('${(await git(['rev-parse', '--absolute-git-dir'], cwd: repo)).trim()}/mickhub/grupos.json');
+  /// Carpeta `<.git>/mickhub` del repo (grupos, candado y fotos de sesiones).
+  static Future<Directory> dir(String repo) async =>
+      Directory('${(await git(['rev-parse', '--absolute-git-dir'], cwd: repo)).trim()}/mickhub');
+
+  static Future<File> _file(String repo) async => File('${(await dir(repo)).path}/grupos.json');
+
+  /// Avisa cuando el JSON cambia en disco (Claude Code moviendo cambios).
+  static Future<StreamSubscription<FileSystemEvent>> watch(String repo, void Function() onChange) async {
+    final f = await _file(repo);
+    await f.parent.create(recursive: true);
+    return f.parent
+        .watch()
+        .where((e) => e.path == f.path || (e is FileSystemMoveEvent && e.destination == f.path))
+        .listen((_) => onChange());
+  }
 
   static Future<ChangeGroups> load(String repo) async {
     try {
@@ -170,6 +198,7 @@ class ChangeGroups {
   void rename(String from, String to) {
     names = [for (final n in names) n == from ? to : n];
     if (active == from) active = to;
+    sessions.updateAll((_, g) => g == from ? to : g);
     files.updateAll((_, g) => g == from ? to : g);
     for (final m in hunks.values) {
       m.updateAll((_, g) => g == from ? to : g);
@@ -187,6 +216,60 @@ class ChangeGroups {
     }
     hunks.removeWhere((_, m) => m.isEmpty);
     collapsed.remove(group);
+    sessions.removeWhere((_, g) => g == group);
+  }
+
+  /// Pasa todo lo de [from] a [to] (que ya existe) y borra [from].
+  void merge(String from, String to) {
+    files.updateAll((_, g) => g == from ? to : g);
+    for (final m in hunks.values) {
+      m.updateAll((_, g) => g == from ? to : g);
+    }
+    sessions.updateAll((_, g) => g == from ? to : g);
+    names.remove(from);
+    if (active == from) active = to;
+    collapsed.remove(from);
+  }
+
+  /// Grupo de la sesión [id] de Claude Code; si no tiene, crea "Sesión xxxx".
+  String sessionGroup(String id) {
+    var g = sessions[id];
+    if (g == null) {
+      final base = 'Sesión ${id.length > 4 ? id.substring(0, 4) : id}';
+      var name = base;
+      for (var n = 2; names.contains(name); n++) {
+        name = '$base ($n)';
+      }
+      g = sessions[id] = name;
+    }
+    if (!names.contains(g)) names = [...names, g];
+    return g;
+  }
+
+  /// Después de que una sesión editó [path]: los bloques de [diff] que no
+  /// estaban en [before] (las claves de antes de editar) son de [group]; los
+  /// que ya estaban siguen en el suyo. Así, si el archivo tenía cambios de
+  /// otra sesión o del dueño, no se los lleva. Devuelve true si algo cambió.
+  bool claim(String path, String diff, Set<String> before, String group) {
+    final keys = hunkKeys(diff);
+    final old = hunkGroups(path, diff);
+    final base = files[path] ?? active ?? '';
+    final next = [
+      for (var i = 0; i < keys.length; i++)
+        if (hunks[path]?[keys[i]] != null) old[i] else if (before.contains(keys[i])) base else group,
+    ];
+    if (!next.contains(group)) return false; // la edición no dejó bloques nuevos
+    final was = jsonEncode([files[path], hunks[path]]);
+    if (next.toSet().length == 1) {
+      moveFile(path, group);
+    } else {
+      files[path] = base;
+      hunks[path] = {
+        for (var i = 0; i < keys.length; i++)
+          if (next[i] != base) keys[i]: next[i],
+      };
+    }
+    return was != jsonEncode([files[path], hunks[path]]);
   }
 }
 
