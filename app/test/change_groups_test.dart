@@ -176,6 +176,19 @@ void claimTests() {
     expect(g.sessions['aaaa1111'], s2);
   });
 
+  test('al commitear, el grupo que quedó vacío sale de la lista (y su sesión lo recupera)', () {
+    const two = '@@ -1 +1 @@\n-a\n+A\n@@ -9 +9 @@\n-z\n+Z\n';
+    final g = ChangeGroups(names: ['A', 'B'], files: {'a.dart': 'A', 'f.dart': 'A', 'b.dart': 'B'}, sessions: {'s1': 'A'});
+    g.moveHunks('f.dart', two, {1}, 'B'); // f.dart repartido: bloque 0 en A, bloque 1 en B
+    g.committed(['A'], ['a.dart'], ['f.dart']); // commit de A: a.dart entero y su parte de f.dart
+    expect(g.names, ['B']);
+    expect(g.groupOf('f.dart'), 'B');
+    g.committed(['B'], ['b.dart'], []); // a B le queda f.dart: sigue
+    expect(g.names, ['B']);
+    expect(g.sessionGroup('s1'), 'A'); // la sesión vuelve a editar: mismo nombre
+    expect(g.names, ['B', 'A']);
+  });
+
   test('el grupo viaja con el commit (con sus archivos) y sigue al renombrar o unir', () {
     final g = ChangeGroups(names: ['A', 'B']);
     g.recordCommit('h1', {

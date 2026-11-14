@@ -345,7 +345,7 @@ Future<void> _commit(String repo, List<String> rest) async {
     g.recordCommit(hash, {
       group: [...whole.map((f) => f.path), ...partial.keys],
     }); // el grupo viaja con el commit (Historial)
-    g.forget(whole.map((f) => f.path));
+    g.committed([group], whole.map((f) => f.path), partial.keys); // un grupo que quedó vacío sale de la lista
     // Un grupo que llegó al commit sin nombre toma el del commit.
     if (opt == null && _autoName.hasMatch(group)) {
       final title = messages.first.trim();

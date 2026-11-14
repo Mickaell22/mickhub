@@ -199,6 +199,32 @@ class ChangeGroups {
     }
   }
 
+  /// Después de un commit de [groups]: olvida lo commiteado ([whole] enteros,
+  /// los bloques de esos grupos en [partial]) y quita de la lista los grupos que
+  /// quedaron sin cambios (pedido del dueño: no dejar grupos vacíos). Su
+  /// etiqueta en [commits] y su sesión se conservan: si la sesión vuelve a
+  /// editar, el grupo reaparece con el mismo nombre.
+  void committed(Iterable<String> groups, Iterable<String> whole, Iterable<String> partial) {
+    final gs = groups.where((g) => g.isNotEmpty).toSet();
+    forget(whole);
+    for (final p in partial) {
+      final m = hunks[p];
+      if (m == null) continue;
+      m.removeWhere((_, g) => gs.contains(g));
+      if (m.isEmpty) {
+        hunks.remove(p);
+      } else if (gs.contains(files[p])) {
+        files[p] = m.values.first; // ponytail: lo que queda del archivo pasa al grupo de otro bloque
+      }
+    }
+    for (final g in gs) {
+      if (files.containsValue(g) || hunks.values.any((m) => m.containsValue(g))) continue;
+      names.remove(g);
+      if (active == g) active = null;
+      collapsed.remove(g);
+    }
+  }
+
   /// Grupo de cada bloque de [diff] (de [path]), en orden.
   List<String> hunkGroups(String path, String diff) {
     final own = hunks[path] ?? const {};

@@ -7,6 +7,15 @@ import 'package:mickhub/syntax.dart';
 import 'package:mickhub/system.dart';
 
 void main() {
+  test('terminalRunArgs: cada terminal recibe carpeta y comando a su manera', () {
+    const run = ['claude', '--resume', 'x'];
+    expect(terminalRunArgs('kitty', '/r', run), ['--directory', '/r', ...run]);
+    expect(terminalRunArgs('/usr/bin/alacritty', '/r', run), ['--working-directory', '/r', '-e', ...run]);
+    expect(terminalRunArgs('gnome-terminal', '/r', run), ['--working-directory=/r', '--', ...run]);
+    expect(terminalRunArgs('wt.exe', r'C:\r', run), ['-d', r'C:\r', ...run]);
+    expect(terminalRunArgs('xterm', '/r', run), ['-e', ...run]);
+  });
+
   test('parseKeyValues respeta los = dentro del valor', () {
     final m = parseKeyValues('protocol=https\nhost=github.com\npassword=a=b\n');
     expect(m['host'], 'github.com');

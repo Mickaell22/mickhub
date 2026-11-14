@@ -754,6 +754,19 @@ class _ShellState extends State<Shell> {
     }
   }
 
+  /// Retoma la sesión de Claude Code que maneja un grupo de cambios.
+  Future<void> _openClaudeSession(String id) async {
+    final dir = await claudeSessionDir(id);
+    if (dir == null) return _snack('Esa sesión de Claude no está en este equipo (se hizo en otro o ya se borró).');
+    final t = await findTerminal(s.terminalCommand);
+    if (t == null) return _snack('No encontré una terminal. Pon su comando en "terminalCommand" de los ajustes.');
+    try {
+      await openClaudeSession(t, dir, id);
+    } catch (e) {
+      _snack('No se pudo abrir la sesión en "$t": $e');
+    }
+  }
+
   /// Abre el repo en el editor y, si estoy mirando un archivo en Cambios,
   /// también ese archivo en la primera línea que cambió.
   Future<void> _openEditor(String path) async {
@@ -1305,6 +1318,7 @@ class _ShellState extends State<Shell> {
             editorCommand: s.editorCommand,
             account: _account,
             summaries: api,
+            onOpenSession: _openClaudeSession,
           )
         : HistoryPane(
             key: ValueKey(repo),
@@ -1317,6 +1331,7 @@ class _ShellState extends State<Shell> {
             originUrl: _origins[repo],
             editorCommand: s.editorCommand,
             summaries: api,
+            onOpenSession: _openClaudeSession,
           );
   }
 

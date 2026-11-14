@@ -144,6 +144,7 @@ class ChangesPane extends StatefulWidget {
     required this.editorCommand,
     this.account,
     this.summaries,
+    this.onOpenSession,
   });
   final String repo;
   final String branch;
@@ -164,6 +165,9 @@ class ChangesPane extends StatefulWidget {
 
   /// API de IA para escribir el mensaje del commit; null o apagada = sin botón.
   final SummaryApi? summaries;
+
+  /// Retoma la sesión de Claude Code (por su id) que maneja un grupo.
+  final void Function(String sessionId)? onOpenSession;
 
   @override
   State<ChangesPane> createState() => _ChangesPaneState();
@@ -595,6 +599,7 @@ class _ChangesPaneState extends State<ChangesPane> {
           menuItem('protect', Icons.lock_outline, 'Proteger grupo (nunca subirlo)'),
         ],
         if (rows.isNotEmpty) menuItem('discard', Icons.delete_outline, 'Descartar grupo…', danger: true),
+        ..._sessionItems([group], _groups.sessions),
         const PopupMenuDivider(),
         menuItem('expand', Icons.unfold_more, 'Expandir todo'),
         menuItem('collapse', Icons.unfold_less, 'Contraer todo'),
@@ -606,6 +611,8 @@ class _ChangesPaneState extends State<ChangesPane> {
       ],
     );
     switch (action) {
+      case final a? when a.startsWith('session:'):
+        widget.onOpenSession?.call(a.substring(8));
       case 'active':
         await _saveGroups((g) => g.active = active ? null : group);
       case 'only':
@@ -1330,7 +1337,11 @@ class _ChangesPaneState extends State<ChangesPane> {
       );
       // El grupo viaja con el commit (Historial, y la cabecera no queda vacía).
       _groups.recordCommit((await git(['rev-parse', 'HEAD'], cwd: widget.repo)).trim(), used);
-      await _forget(whole.map((f) => f.path)); // si vuelven a cambiar, es otro cambio
+      if (_groups.names.isNotEmpty) {
+        _mutations++;
+        _groups.committed(used.keys, whole.map((f) => f.path), parts.keys); // si vuelven a cambiar, es otro cambio
+        await _groups.save(widget.repo);
+      }
       _summary.clear();
       _description.clear();
       widget.onCommitted();
@@ -1737,6 +1748,7 @@ class HistoryPane extends StatefulWidget {
     this.originUrl,
     this.editorCommand = '',
     this.summaries,
+    this.onOpenSession,
   });
   final String repo;
   final int ahead;
@@ -1751,6 +1763,9 @@ class HistoryPane extends StatefulWidget {
 
   /// Resúmenes con IA; null o apagada = no se muestra el panel.
   final SummaryApi? summaries;
+
+  /// Retoma la sesión de Claude Code (por su id) que maneja un grupo.
+  final void Function(String sessionId)? onOpenSession;
 
   @override
   State<HistoryPane> createState() => _HistoryPaneState();
@@ -1771,6 +1786,10 @@ class _HistoryPaneState extends State<HistoryPane> {
   ({Commit? before, Commit? after}) _related = (before: null, after: null); // mismo trabajo en otros commits
   String? _summaryError; // null = cargando o sin pedir
   Map<String, Map<String, List<String>>> _commitGroups = {}; // hash -> grupo -> sus archivos en el commit
+  // Grupos contraídos en la lista de archivos del commit ('' = "Sin grupo"). Se
+  // mantienen al pasar de un commit a otro: si cierras "Config", sigue cerrado.
+  final _closedGroups = <String>{};
+  Map<String, String> _groupSessions = {}; // sesión de Claude Code -> su grupo
 
   @override
   void initState() {
@@ -1798,6 +1817,7 @@ class _HistoryPaneState extends State<HistoryPane> {
     setState(() {
       _commits = commits;
       _commitGroups = groups.commits;
+      _groupSessions = groups.sessions;
       _hasMore = commits.length == logPage;
     });
     if (_query.trim().isNotEmpty) _search(_query);
@@ -1853,11 +1873,11 @@ class _HistoryPaneState extends State<HistoryPane> {
             if (e.value.contains(f.path)) f,
         ];
         if (mine.isEmpty) continue;
-        items.addAll([(e.key, mine.length), ...mine]);
+        items.addAll([(e.key, mine.length), if (!_closedGroups.contains(e.key)) ...mine]);
         placed.addAll(mine.map((f) => f.path));
       }
       final rest = files.where((f) => !placed.contains(f.path)).toList();
-      if (rest.isNotEmpty) items.addAll([('', rest.length), ...rest]);
+      if (rest.isNotEmpty) items.addAll([('', rest.length), if (!_closedGroups.contains('')) ...rest]);
     } else {
       items.addAll(files);
     }
@@ -1867,25 +1887,31 @@ class _HistoryPaneState extends State<HistoryPane> {
       itemBuilder: (_, i) {
         final item = items[i];
         if (item case (final String g, final int n)) {
-          return Container(
-            color: Gh.box,
-            padding: const EdgeInsets.symmetric(horizontal: Gh.sp),
-            child: Row(
-              children: [
-                Icon(g.isEmpty ? Icons.folder_off_outlined : Icons.folder_special_outlined, size: 14, color: Gh.link),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    g.isEmpty ? 'Sin grupo' : g,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontWeight: FontWeight.w600),
+          final open = !_closedGroups.contains(g);
+          return InkWell(
+            onTap: () => setState(() => open ? _closedGroups.add(g) : _closedGroups.remove(g)),
+            child: Container(
+              color: Gh.box,
+              padding: const EdgeInsets.only(left: 2, right: Gh.sp),
+              child: Row(
+                children: [
+                  Icon(open ? Icons.expand_more : Icons.chevron_right, size: 16, color: Gh.textSecondary),
+                  const SizedBox(width: 2),
+                  Icon(g.isEmpty ? Icons.folder_off_outlined : Icons.folder_special_outlined, size: 14, color: Gh.link),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      g.isEmpty ? 'Sin grupo' : g,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontWeight: FontWeight.w600),
+                    ),
                   ),
-                ),
-                Text(
-                  '$n',
-                  style: const TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
-                ),
-              ],
+                  Text(
+                    '$n',
+                    style: const TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
+                  ),
+                ],
+              ),
             ),
           );
         }
@@ -2056,6 +2082,7 @@ class _HistoryPaneState extends State<HistoryPane> {
       items: [
         menuItem('copy', Icons.content_copy, 'Copiar hash'),
         if (web != null) menuItem('web', Icons.open_in_new, 'Ver en el navegador'),
+        ..._sessionItems(_commitGroups[c.hash]?.keys ?? const [], _groupSessions),
         const PopupMenuDivider(),
         if (isLast && unpushed) menuItem('undo', Icons.undo, 'Deshacer este commit (vuelve a Cambios)'),
         menuItem('revert', Icons.settings_backup_restore, 'Revertir este commit…', danger: true),
@@ -2064,6 +2091,8 @@ class _HistoryPaneState extends State<HistoryPane> {
     if (!mounted) return;
     try {
       switch (action) {
+        case final a? when a.startsWith('session:'):
+          widget.onOpenSession?.call(a.substring(8));
         case 'copy':
           await Clipboard.setData(ClipboardData(text: c.hash));
         case 'web':
@@ -2330,3 +2359,19 @@ Widget groupChip(String name) => Container(
     ],
   ),
 );
+
+/// Opciones "Abrir la sesión de Claude" para las sesiones de `mickhub` que
+/// manejan [groups] ([sessions]: id de sesión -> grupo). El valor es `session:<id>`.
+List<PopupMenuEntry<String>> _sessionItems(Iterable<String> groups, Map<String, String> sessions) {
+  final gs = groups.toList();
+  final items = <PopupMenuEntry<String>>[
+    for (final e in sessions.entries)
+      if (gs.contains(e.value))
+        menuItem(
+          'session:${e.key}',
+          Icons.smart_toy_outlined,
+          gs.length > 1 ? 'Abrir la sesión de Claude de "${e.value}"' : 'Abrir la sesión de Claude que lo maneja',
+        ),
+  ];
+  return items.isEmpty ? items : [const PopupMenuDivider(), ...items];
+}
