@@ -436,7 +436,9 @@ class _ChangesPaneState extends State<ChangesPane> {
         });
         setState(_picked.clear);
       case 'shelve':
-        await _shelve(files);
+        // Si todos son de un mismo grupo, el apartado se llama como él.
+        final gs = files.map((f) => _groups.groupOf(f.path)).toSet();
+        await _shelve(files, suggested: gs.length == 1 && gs.first.isNotEmpty ? gs.first : null);
       case 'protect':
         await _guard(() async {
           for (final f in files) {
@@ -1135,33 +1137,74 @@ class _ChangesPaneState extends State<ChangesPane> {
   Widget _rowAction(String tooltip, IconData icon, VoidCallback onPressed) =>
       IconButton(tooltip: tooltip, iconSize: 14, visualDensity: VisualDensity.compact, onPressed: onPressed, icon: Icon(icon));
 
-  Widget _protectedSection() => _section(
-    icon: Icons.lock,
-    color: Gh.modified,
-    title: 'Protegidos (${_protected.length})',
-    open: _showProtected,
-    toggle: () => setState(() => _showProtected = !_showProtected),
-    rows: [
-      for (final p in _protected)
-        GhRow(
-          child: Row(
-            children: [
-              Expanded(
-                child: Tooltip(
-                  message: p.tracked ? 'Cambios ocultos con skip-worktree' : 'Archivo nuevo ignorado en .git/info/exclude',
-                  child: Text(
-                    p.path,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: Gh.textSecondary),
+  /// Los protegidos siguen recordando su grupo (la asignación no se olvida),
+  /// así que se muestran agrupados y se desprotege un grupo entero de una vez;
+  /// al desprotegerlos vuelven a su grupo en Cambios.
+  Widget _protectedSection() {
+    Widget fileRow(Protected p, {bool indent = false}) => GhRow(
+      child: Row(
+        children: [
+          if (indent) const SizedBox(width: Gh.sp * 1.5),
+          Expanded(
+            child: Tooltip(
+              message: p.tracked ? 'Cambios ocultos con skip-worktree' : 'Archivo nuevo ignorado en .git/info/exclude',
+              child: Text(
+                p.path,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Gh.textSecondary),
+              ),
+            ),
+          ),
+          _rowAction('Desproteger', Icons.lock_open, () => _guard(() => unprotect(widget.repo, p))),
+        ],
+      ),
+    );
+
+    final byGroup = <String, List<Protected>>{};
+    for (final p in _protected) {
+      byGroup.putIfAbsent(_groups.groupOf(p.path), () => []).add(p);
+    }
+    final grouped = byGroup.keys.any((g) => g.isNotEmpty);
+    final order = [..._groups.names.where(byGroup.containsKey), if (byGroup.containsKey('')) ''];
+    return _section(
+      icon: Icons.lock,
+      color: Gh.modified,
+      title: 'Protegidos (${_protected.length})',
+      open: _showProtected,
+      toggle: () => setState(() => _showProtected = !_showProtected),
+      rows: !grouped
+          ? [for (final p in _protected) fileRow(p)]
+          : [
+              for (final g in order) ...[
+                GhRow(
+                  child: Row(
+                    children: [
+                      Icon(g.isEmpty ? Icons.folder_off_outlined : Icons.folder_special_outlined, size: 14, color: Gh.textSecondary),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          '${g.isEmpty ? 'Sin grupo' : g} (${byGroup[g]!.length})',
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                      ),
+                      _rowAction(
+                        g.isEmpty ? 'Desproteger los sin grupo' : 'Desproteger grupo',
+                        Icons.lock_open,
+                        () => _guard(() async {
+                          for (final p in byGroup[g]!) {
+                            await unprotect(widget.repo, p);
+                          }
+                        }),
+                      ),
+                    ],
                   ),
                 ),
-              ),
-              _rowAction('Desproteger', Icons.lock_open, () => _guard(() => unprotect(widget.repo, p))),
+                for (final p in byGroup[g]!) fileRow(p, indent: true),
+              ],
             ],
-          ),
-        ),
-    ],
-  );
+    );
+  }
 
   Widget _shelvesSection() => _section(
     icon: Icons.inventory_2_outlined,
@@ -1187,7 +1230,13 @@ class _ChangesPaneState extends State<ChangesPane> {
                       children: [
                         Text(sh.name, overflow: TextOverflow.ellipsis),
                         Text(
-                          '${sh.branch} · ${snap.data?.length ?? '…'} archivos · ${timeAgo(sh.date)}',
+                          [
+                            sh.branch,
+                            '${snap.data?.length ?? '…'} archivos',
+                            // De qué grupos son: al recuperarlo vuelven a ellos.
+                            ...{for (final f in snap.data ?? const <String>[]) _groups.groupOf(f)}.where((g) => g.isNotEmpty),
+                            timeAgo(sh.date),
+                          ].join(' · '),
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
                         ),
