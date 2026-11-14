@@ -138,6 +138,50 @@ class ChangeGroups {
     }
   }
 
+  /// Corre [body] con el candado `grupos.lock` del repo: la app y cada
+  /// `mickhub` (una sesión de Claude por proceso) escriben el mismo JSON.
+  static Future<T> withLock<T>(String repo, Future<T> Function(Directory dir) body) async {
+    final d = await dir(repo);
+    await d.create(recursive: true);
+    final lock = File('${d.path}/grupos.lock');
+    for (var i = 0; ; i++) {
+      try {
+        lock.createSync(exclusive: true);
+        break;
+      } on FileSystemException {
+        final stale = lock.existsSync() && DateTime.now().difference(lock.statSync().modified).inSeconds > 10;
+        if (stale || i > 250) {
+          try {
+            lock.deleteSync(); // quedó de un proceso que murió
+          } on FileSystemException {
+            // otro lo borró primero
+          }
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
+    }
+    try {
+      return await body(d);
+    } finally {
+      try {
+        lock.deleteSync();
+      } on FileSystemException {
+        // ya no estaba
+      }
+    }
+  }
+
+  /// Lee lo último del disco, le aplica [change] y lo guarda si cambió, todo
+  /// con el candado: así no se pisa lo que otro proceso escribió entre medio
+  /// (pasaba: la app guardaba una lectura vieja encima de un hook de mickhub).
+  static Future<ChangeGroups> update(String repo, FutureOr<void> Function(ChangeGroups g) change) => withLock(repo, (_) async {
+    final g = await load(repo);
+    final before = jsonEncode(g.toJson());
+    await change(g);
+    if (jsonEncode(g.toJson()) != before) await g.save(repo);
+    return g;
+  });
+
   /// Escribe atómico (temporal + rename), por si Claude Code lo lee a la vez.
   Future<void> save(String repo) async {
     final f = await _file(repo);

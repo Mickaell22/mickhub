@@ -140,43 +140,14 @@ Account? _account(String repo, String? origin) {
 // --- Grupos con candado ---------------------------------------------------------------
 
 /// Lee, cambia y guarda grupos.json sin pisar a otra sesión que hace lo mismo.
-// ponytail: el candado es solo entre procesos de `mickhub`; la app guarda sin
-// él. Si chocan, se pierde una asignación (se arregla moviendo el archivo).
-// Upgrade: que la app también tome `grupos.lock`.
-Future<T> _locked<T>(String repo, Future<T> Function(ChangeGroups g, Directory dir) change) async {
-  final dir = await ChangeGroups.dir(repo);
-  await dir.create(recursive: true);
-  final lock = File('${dir.path}/grupos.lock');
-  for (var i = 0; ; i++) {
-    try {
-      lock.createSync(exclusive: true);
-      break;
-    } on FileSystemException {
-      final stale = lock.existsSync() && DateTime.now().difference(lock.statSync().modified).inSeconds > 10;
-      if (stale || i > 250) {
-        try {
-          lock.deleteSync(); // quedó de un proceso que murió
-        } on FileSystemException {
-          // otro lo borró primero
-        }
-      }
-      await Future<void>.delayed(const Duration(milliseconds: 20));
-    }
-  }
-  try {
-    final g = await ChangeGroups.load(repo);
-    final before = jsonEncode(g.toJson());
-    final r = await change(g, dir);
-    if (jsonEncode(g.toJson()) != before) await g.save(repo);
-    return r;
-  } finally {
-    try {
-      lock.deleteSync();
-    } on FileSystemException {
-      // ya no estaba
-    }
-  }
-}
+// El mismo candado lo toma la app (ChangeGroups.update).
+Future<T> _locked<T>(String repo, Future<T> Function(ChangeGroups g, Directory dir) change) => ChangeGroups.withLock(repo, (dir) async {
+  final g = await ChangeGroups.load(repo);
+  final before = jsonEncode(g.toJson());
+  final r = await change(g, dir);
+  if (jsonEncode(g.toJson()) != before) await g.save(repo);
+  return r;
+});
 
 /// Diff contra HEAD de cada archivo con cambios, con una sola llamada a git
 /// para los versionados (los hooks corren en cada comando de Claude).
@@ -390,6 +361,25 @@ Future<void> _pull(String repo) async {
 // --- Hooks de Claude Code -----------------------------------------------------------------
 
 /// `git commit` o `git push` (con o sin opciones antes del subcomando).
+/// Órdenes de subir: "haz push", "dale push", "commit y push", "pushea", "súbelo".
+/// Una palabra suelta no basta: "solo commit y no push" no debe dar permiso.
+final _pushOrder = RegExp(
+  r'\b(haz|hazle|has|dale|hacer|y)\s+(el\s+|un\s+)?push\b|\bpushea\w*|\bs[uú]bel[oa]s?\b|\bs[uú]be\s+(los\s+cambios|todo|eso|esto)\b',
+  caseSensitive: false,
+);
+
+/// El mensaje pide subir y esa orden no está negada ("no hagas push", "y no push").
+bool _asksPush(String prompt) => _pushOrder
+    .allMatches(prompt)
+    .any((m) => !RegExp(r'\bno\b[^.,;!?]{0,12}$', caseSensitive: false).hasMatch(prompt.substring(0, m.start)));
+final _gitPush = RegExp(r'''(^|[;&|(\s])git\s+(?:(?:-[cC]|--git-dir|--work-tree)\s+(?:"[^"]*"|'[^']*'|\S+)\s+|--?\S+\s+)*push\b''');
+final _mickhubPush = RegExp(r'''(^|[;&|(\s])mickhub(\.exe)?\s+(?:-C\s+(?:"[^"]*"|'[^']*'|\S+)\s+)?push\b''');
+
+String _cacheDir() {
+  final env = Platform.environment;
+  return Platform.isWindows ? '${env['LOCALAPPDATA']}\\mickhub' : '${env['XDG_CACHE_HOME'] ?? '${env['HOME']}/.cache'}/mickhub';
+}
+
 final _gitWrite = RegExp(
   r'''(^|[;&|(\s])git\s+(?:(?:-[cC]|--git-dir|--work-tree)\s+(?:"[^"]*"|'[^']*'|\S+)\s+|--?\S+\s+)*(commit|push)\b''',
 );
@@ -414,8 +404,29 @@ Future<void> _hook() async {
   final toolInput = (input['tool_input'] as Map?) ?? const {};
   final repos = _mickhubRepos();
 
+  // Regla del dueño: Claude commitea pero no sube; el push lo hace él, salvo
+  // que lo pida textualmente en su mensaje. Cada mensaje enciende o apaga el
+  // permiso para ese turno.
+  final pushFlag = File('${_cacheDir()}/push/${session.isEmpty ? 'sin-sesion' : session}');
+  if (event == 'UserPromptSubmit') {
+    if (_asksPush(input['prompt'] as String? ?? '')) {
+      pushFlag.parent.createSync(recursive: true);
+      pushFlag.writeAsStringSync('ok');
+    } else if (pushFlag.existsSync()) {
+      pushFlag.deleteSync();
+    }
+    return;
+  }
   if (event == 'PreToolUse' && tool == 'Bash') {
     final cmd = toolInput['command'] as String? ?? '';
+    final bare = cmd.replaceAll(_quoted, 'Q');
+    if ((_gitPush.hasMatch(bare) || _mickhubPush.hasMatch(bare)) && !pushFlag.existsSync()) {
+      stderr.writeln(
+        'Push bloqueado: el dueño sube a mano. Haz solo el commit y dile que quedó listo para subir; '
+        'el push va únicamente si lo pide textualmente en su mensaje ("haz push", "súbelo").',
+      );
+      exit(2);
+    }
     // Lo que va entre comillas (un mensaje que dice "git push") no cuenta.
     if (_gitWrite.hasMatch(cmd.replaceAll(_quoted, 'Q'))) {
       final dirs = _dirs(cwd, cmd);

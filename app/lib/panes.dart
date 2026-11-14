@@ -270,7 +270,7 @@ class _ChangesPaneState extends State<ChangesPane> {
       do {
         _reload = false;
         final m = _mutations;
-        final (files, locked, shelved, identity, merge, groups) = await (
+        final (files, locked, shelved, identity, merge, loaded) = await (
           status(widget.repo),
           protectedFiles(widget.repo),
           shelves(widget.repo),
@@ -282,7 +282,9 @@ class _ChangesPaneState extends State<ChangesPane> {
           _reload = true;
           continue;
         }
-        if (groups.sync(files.map((f) => f.path))) await groups.save(widget.repo);
+        final paths = files.map((f) => f.path).toList();
+        // Con cambios por asignar, se aplica sobre lo último del disco y con candado.
+        final groups = loaded.sync(paths) ? await ChangeGroups.update(widget.repo, (g) => g.sync(paths)) : loaded;
         final split = [
           for (final f in files)
             if (groups.hunks.containsKey(f.path)) f,
@@ -394,7 +396,7 @@ class _ChangesPaneState extends State<ChangesPane> {
     _mutations++;
     change(_groups);
     setState(() {});
-    await _groups.save(widget.repo);
+    _groups = await ChangeGroups.update(widget.repo, change);
     await _load();
   }
 
@@ -402,8 +404,7 @@ class _ChangesPaneState extends State<ChangesPane> {
   Future<void> _forget(Iterable<String> paths) async {
     if (_groups.names.isEmpty) return;
     _mutations++;
-    _groups.forget(paths);
-    await _groups.save(widget.repo);
+    _groups = await ChangeGroups.update(widget.repo, (g) => g.forget(paths));
   }
 
   // --- Selección por lotes (Ctrl/Shift+clic) ---------------------------------------
@@ -1336,12 +1337,12 @@ class _ChangesPaneState extends State<ChangesPane> {
         partial: {for (final e in parts.entries) e.key: selectHunks(e.value.$1, e.value.$2)!},
       );
       // El grupo viaja con el commit (Historial, y la cabecera no queda vacía).
-      _groups.recordCommit((await git(['rev-parse', 'HEAD'], cwd: widget.repo)).trim(), used);
-      if (_groups.names.isNotEmpty) {
-        _mutations++;
-        _groups.committed(used.keys, whole.map((f) => f.path), parts.keys); // si vuelven a cambiar, es otro cambio
-        await _groups.save(widget.repo);
-      }
+      final hash = (await git(['rev-parse', 'HEAD'], cwd: widget.repo)).trim();
+      _mutations++;
+      _groups = await ChangeGroups.update(widget.repo, (g) {
+        g.recordCommit(hash, used);
+        g.committed(used.keys, whole.map((f) => f.path), parts.keys); // si vuelven a cambiar, es otro cambio
+      });
       _summary.clear();
       _description.clear();
       widget.onCommitted();
