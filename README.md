@@ -20,4 +20,11 @@ Necesita `git` instalado; en Windows, con el Git Credential Manager (viene con G
 
 `Ctrl+T` repositorio · `Ctrl+B` rama · `Ctrl+Shift+N` nueva rama · `Ctrl+1`/`Ctrl+2` Cambios/Historial · `Ctrl+Shift+P` fetch/pull/push · `Ctrl+Enter` commit · `Ctrl+Shift+F` abrir carpeta · `Ctrl+Shift+A` abrir en el editor (con el archivo seleccionado) · `Ctrl+`` ` abrir en la terminal · `F5` refrescar · `Ctrl+/` todos los atajos.
 
+## Resúmenes con IA (opcional)
+
+Al abrir un commit en el Historial, MickHub muestra qué hizo de verdad, escrito por DeepSeek a partir del diff. Corre en una API propia (`api/`, FastAPI + Postgres) para que la key de DeepSeek no viaje a cada equipo; cada commit se resume una sola vez y los merges no gastan tokens.
+
+1. Desplegar `api/` (en Railway: un servicio con la carpeta `api/` y un Postgres) con las variables de [`api/.env.example`](./api/.env.example).
+2. En el `settings.json` de MickHub, poner `apiUrl` (la URL de la API) y `apiToken` (el mismo `MICKHUB_API_TOKEN`). Vacíos, el panel no aparece.
+
 Estado: en desarrollo (v1). Ya reemplaza a GitHub Desktop en lo diario: cambios, commit, historial con búsqueda, conflictos, ramas locales, apartados, candado de cambios locales y cuentas de GitHub y Azure DevOps a la vez. Detalles en [CLAUDE.md](./CLAUDE.md).

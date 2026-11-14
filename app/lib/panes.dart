@@ -8,6 +8,7 @@ import 'accounts.dart';
 import 'change_groups.dart';
 import 'change_groups_ui.dart';
 import 'avatar.dart';
+import 'summaries.dart';
 import 'system.dart';
 import 'diff_view.dart';
 import 'git.dart';
@@ -1583,6 +1584,7 @@ class HistoryPane extends StatefulWidget {
     this.account,
     this.originUrl,
     this.editorCommand = '',
+    this.summaries,
   });
   final String repo;
   final int ahead;
@@ -1594,6 +1596,9 @@ class HistoryPane extends StatefulWidget {
   final Account? account;
   final String? originUrl;
   final String editorCommand;
+
+  /// Resúmenes con IA; null o apagada = no se muestra el panel.
+  final SummaryApi? summaries;
 
   @override
   State<HistoryPane> createState() => _HistoryPaneState();
@@ -1610,6 +1615,8 @@ class _HistoryPaneState extends State<HistoryPane> {
   FileChange? _file;
   String? _diff;
   final _fileFilter = TextEditingController(); // busca entre los archivos del commit elegido
+  CommitSummary? _summary;
+  String? _summaryError; // null = cargando o sin pedir
 
   @override
   void initState() {
@@ -1705,10 +1712,66 @@ class _HistoryPaneState extends State<HistoryPane> {
   Future<void> _select(Commit c) async {
     if (_selected?.hash != c.hash) _fileFilter.clear();
     setState(() => _selected = c);
+    _loadSummary(c);
     final files = await commitFiles(widget.repo, c.hash);
     if (!mounted || _selected != c) return;
     setState(() => _files = files);
     if (files.isNotEmpty) _selectFile(files.first);
+  }
+
+  /// Pide el resumen de la IA al abrir el commit (si ya existe, la API lo
+  /// devuelve sin volver a gastar tokens).
+  Future<void> _loadSummary(Commit c) async {
+    final api = widget.summaries;
+    setState(() {
+      _summary = null;
+      _summaryError = null;
+    });
+    if (api == null || !api.enabled) return;
+    try {
+      final s = await api.summary(widget.repo, c);
+      if (mounted && _selected == c) setState(() => _summary = s);
+    } catch (e) {
+      if (mounted && _selected == c) setState(() => _summaryError = '$e');
+    }
+  }
+
+  Widget _summaryPanel(Commit c) {
+    final style = Theme.of(context).textTheme.bodySmall;
+    return Container(
+      width: double.infinity,
+      constraints: const BoxConstraints(maxHeight: 180),
+      padding: const EdgeInsets.fromLTRB(Gh.sp, 6, Gh.sp, 6),
+      decoration: const BoxDecoration(
+        color: Gh.box,
+        border: Border(bottom: Gh.divider),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Padding(
+            padding: EdgeInsets.only(top: 1, right: 6),
+            child: Icon(Icons.auto_awesome_outlined, size: 14, color: Gh.textSecondary),
+          ),
+          Expanded(
+            child: switch ((_summary, _summaryError)) {
+              (final s?, _) => SingleChildScrollView(
+                child: SelectableText(s.truncated ? '${s.text}\n\n(El diff era muy grande: se resumió una parte.)' : s.text, style: style),
+              ),
+              (_, final e?) => Row(
+                children: [
+                  Expanded(
+                    child: Text(e, style: style?.copyWith(color: Gh.deleted)),
+                  ),
+                  TextButton(onPressed: () => _loadSummary(c), child: const Text('Reintentar')),
+                ],
+              ),
+              _ => Text('Resumiendo con IA…', style: style),
+            },
+          ),
+        ],
+      ),
+    );
   }
 
   /// Clic derecho en un archivo de un commit.
@@ -1911,6 +1974,7 @@ class _HistoryPaneState extends State<HistoryPane> {
                   ],
                 ),
               ),
+              if (widget.summaries?.enabled ?? false) _summaryPanel(c),
               Expanded(
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.stretch,

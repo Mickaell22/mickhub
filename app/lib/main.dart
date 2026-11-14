@@ -13,6 +13,7 @@ import 'git.dart';
 import 'panes.dart';
 import 'repo_dialogs.dart';
 import 'settings.dart';
+import 'summaries.dart';
 import 'system.dart';
 import 'theme.dart';
 import 'updater.dart';
@@ -1308,6 +1309,7 @@ class _ShellState extends State<Shell> {
             account: _account,
             originUrl: _origins[repo],
             editorCommand: s.editorCommand,
+            summaries: SummaryApi(s.apiUrl, s.apiToken),
           );
   }
 
