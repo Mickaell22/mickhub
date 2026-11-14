@@ -180,11 +180,16 @@ void claimTests() {
     const two = '@@ -1 +1 @@\n-a\n+A\n@@ -9 +9 @@\n-z\n+Z\n';
     final g = ChangeGroups(names: ['A', 'B'], files: {'a.dart': 'A', 'f.dart': 'A', 'b.dart': 'B'}, sessions: {'s1': 'A'});
     g.moveHunks('f.dart', two, {1}, 'B'); // f.dart repartido: bloque 0 en A, bloque 1 en B
-    g.committed(['A'], ['a.dart'], ['f.dart']); // commit de A: a.dart entero y su parte de f.dart
+    g.committed(['A'], ['a.dart'], ['f.dart'], changed: ['f.dart', 'b.dart']); // commit de A: a.dart entero y su parte de f.dart
     expect(g.names, ['B']);
     expect(g.groupOf('f.dart'), 'B');
-    g.committed(['B'], ['b.dart'], []); // a B le queda f.dart: sigue
+    g.committed(['B'], ['b.dart'], [], changed: ['f.dart']); // a B le queda f.dart: sigue
     expect(g.names, ['B']);
+    // Un archivo recordado pero ya sin cambios no mantiene vivo al grupo.
+    g.files['viejo.lock'] = 'B';
+    g.committed(['B'], [], [], changed: []);
+    expect(g.names, isEmpty);
+    g.names = ['B'];
     expect(g.sessionGroup('s1'), 'A'); // la sesión vuelve a editar: mismo nombre
     expect(g.names, ['B', 'A']);
   });

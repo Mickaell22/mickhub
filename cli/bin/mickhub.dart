@@ -312,11 +312,12 @@ Future<void> _commit(String repo, List<String> rest) async {
   );
   final hash = (await git(['rev-parse', 'HEAD'], cwd: repo)).trim();
   String? renamed;
+  final still = [for (final f in await status(repo)) f.path]; // lo que sigue con cambios tras el commit
   await _locked(repo, (g, _) async {
     g.recordCommit(hash, {
       group: [...whole.map((f) => f.path), ...partial.keys],
     }); // el grupo viaja con el commit (Historial)
-    g.committed([group], whole.map((f) => f.path), partial.keys); // un grupo que quedó vacío sale de la lista
+    g.committed([group], whole.map((f) => f.path), partial.keys, changed: still); // un grupo que quedó vacío sale de la lista
     // Un grupo que llegó al commit sin nombre toma el del commit.
     if (opt == null && _autoName.hasMatch(group)) {
       final title = messages.first.trim();

@@ -1341,7 +1341,15 @@ class _ChangesPaneState extends State<ChangesPane> {
       _mutations++;
       _groups = await ChangeGroups.update(widget.repo, (g) {
         g.recordCommit(hash, used);
-        g.committed(used.keys, whole.map((f) => f.path), parts.keys); // si vuelven a cambiar, es otro cambio
+        g.committed(
+          used.keys,
+          whole.map((f) => f.path),
+          parts.keys,
+          changed: [
+            for (final f in _files)
+              if (!whole.contains(f)) f.path,
+          ],
+        ); // si vuelven a cambiar, es otro cambio
       });
       _summary.clear();
       _description.clear();

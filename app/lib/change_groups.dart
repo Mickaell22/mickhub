@@ -248,7 +248,11 @@ class ChangeGroups {
   /// quedaron sin cambios (pedido del dueño: no dejar grupos vacíos). Su
   /// etiqueta en [commits] y su sesión se conservan: si la sesión vuelve a
   /// editar, el grupo reaparece con el mismo nombre.
-  void committed(Iterable<String> groups, Iterable<String> whole, Iterable<String> partial) {
+  /// [changed] son los archivos que siguen con cambios: un grupo al que solo
+  /// le quedan archivos recordados sin cambios (p. ej. un pubspec.lock que se
+  /// tocó y se restauró) cuenta como vacío.
+  void committed(Iterable<String> groups, Iterable<String> whole, Iterable<String> partial, {required Iterable<String> changed}) {
+    final live = changed.toSet();
     final gs = groups.where((g) => g.isNotEmpty).toSet();
     forget(whole);
     for (final p in partial) {
@@ -262,7 +266,7 @@ class ChangeGroups {
       }
     }
     for (final g in gs) {
-      if (files.containsValue(g) || hunks.values.any((m) => m.containsValue(g))) continue;
+      if (live.any((p) => groupOf(p) == g || (hunks[p]?.containsValue(g) ?? false))) continue;
       names.remove(g);
       if (active == g) active = null;
       collapsed.remove(g);
