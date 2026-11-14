@@ -402,7 +402,7 @@ Future<void> _hook() async {
     final cmd = toolInput['command'] as String? ?? '';
     // Lo que va entre comillas (un mensaje que dice "git push") no cuenta.
     if (_gitWrite.hasMatch(cmd.replaceAll(_quoted, 'Q'))) {
-      final dirs = [cwd, for (final m in _dirArg.allMatches(cmd)) _resolve(cwd, m[1]!.replaceAll(RegExp('^["\']|["\']\$'), ''))];
+      final dirs = _dirs(cwd, cmd);
       for (final d in dirs) {
         final top = await _toplevel(d);
         if (top != null && repos.contains(_norm(top))) {
@@ -422,59 +422,75 @@ Future<void> _hook() async {
   try {
     final String? path = _editTools.contains(tool) ? (toolInput['file_path'] ?? toolInput['notebook_path']) as String? : null;
     if (tool != 'Bash' && path == null) return;
-    final repo = await _toplevel(path == null ? cwd : File(path).parent.path);
-    if (repo == null || !repos.contains(_norm(repo))) return;
-    final rel = path == null ? null : _relative(repo, path);
-    final snapFile = File('${(await ChangeGroups.dir(repo)).path}/sesiones/$session.json');
-
-    if (event == 'PreToolUse') {
-      // Foto de los bloques de antes: lo que aparezca después es de esta sesión.
-      final files = [
-        for (final f in await status(repo))
-          if (rel == null || f.path == rel) f,
-      ];
-      if (files.length > 300) return; // ponytail: repo con miles de cambios (build sin ignorar); no se reparte
-      final diffs = await _diffs(repo, files);
-      await _locked(repo, (_, _) async {
-        final snap = _readSnap(snapFile);
-        if (rel == null) snap['all'] = true;
-        final paths = (snap['paths'] as Map<String, dynamic>);
-        if (rel != null) paths[rel] = <String>[];
-        for (final f in files) {
-          paths[f.path] = hunkKeys(diffs[f.path] ?? '');
-        }
-        await snapFile.parent.create(recursive: true);
-        snapFile.writeAsStringSync(jsonEncode(snap));
-      });
-    } else if (event == 'PostToolUse') {
-      final files = [
-        for (final f in await status(repo))
-          if (rel == null || f.path == rel) f,
-      ];
-      if (files.length > 300) return;
-      final diffs = await _diffs(repo, files);
-      await _locked(repo, (g, _) async {
-        final snap = _readSnap(snapFile);
-        final paths = snap['paths'] as Map<String, dynamic>;
-        for (final f in files) {
-          final known = paths[f.path] as List?;
-          if (known == null && snap['all'] != true) continue; // sin foto de antes: no se adivina
-          final before = {...?known?.cast<String>()};
-          if (hunkKeys(diffs[f.path] ?? '').every(before.contains)) continue;
-          g.claim(f.path, diffs[f.path] ?? '', before, g.sessionGroup(session));
-        }
-        if (rel == null) {
-          snapFile.deleteSync();
-        } else {
-          paths.remove(rel);
-          snapFile.writeAsStringSync(jsonEncode(snap));
-        }
-      });
+    // En un Bash, el repo de la sesión y los de cada `cd`/`-C` del comando.
+    final dirs = path != null ? [File(path).parent.path] : _dirs(cwd, toolInput['command'] as String? ?? '');
+    final seen = <String>{};
+    for (final d in dirs) {
+      final repo = await _toplevel(d);
+      if (repo == null || !repos.contains(_norm(repo)) || !seen.add(_norm(repo))) continue;
+      await _track(repo, path == null ? null : _relative(repo, path), event as String?, session);
     }
   } catch (_) {
     // el hook nunca corta el trabajo de Claude
   }
 }
+
+/// Foto antes de la herramienta y reparto después (ver [_hook]). [rel] es el
+/// archivo que edita (null = un Bash: todo el repo).
+Future<void> _track(String repo, String? rel, String? event, String session) async {
+  final snapFile = File('${(await ChangeGroups.dir(repo)).path}/sesiones/$session.json');
+
+  if (event == 'PreToolUse') {
+    // Foto de los bloques de antes: lo que aparezca después es de esta sesión.
+    final files = [
+      for (final f in await status(repo))
+        if (rel == null || f.path == rel) f,
+    ];
+    if (files.length > 300) return; // ponytail: repo con miles de cambios (build sin ignorar); no se reparte
+    final diffs = await _diffs(repo, files);
+    await _locked(repo, (_, _) async {
+      final snap = _readSnap(snapFile);
+      if (rel == null) snap['all'] = true;
+      final paths = (snap['paths'] as Map<String, dynamic>);
+      if (rel != null) paths[rel] = <String>[];
+      for (final f in files) {
+        paths[f.path] = hunkKeys(diffs[f.path] ?? '');
+      }
+      await snapFile.parent.create(recursive: true);
+      snapFile.writeAsStringSync(jsonEncode(snap));
+    });
+  } else if (event == 'PostToolUse') {
+    final files = [
+      for (final f in await status(repo))
+        if (rel == null || f.path == rel) f,
+    ];
+    if (files.length > 300) return;
+    final diffs = await _diffs(repo, files);
+    await _locked(repo, (g, _) async {
+      final snap = _readSnap(snapFile);
+      final paths = snap['paths'] as Map<String, dynamic>;
+      for (final f in files) {
+        final known = paths[f.path] as List?;
+        if (known == null && snap['all'] != true) continue; // sin foto de antes: no se adivina
+        final before = {...?known?.cast<String>()};
+        if (hunkKeys(diffs[f.path] ?? '').every(before.contains)) continue;
+        g.claim(f.path, diffs[f.path] ?? '', before, g.sessionGroup(session));
+      }
+      if (rel == null) {
+        snapFile.deleteSync();
+      } else {
+        paths.remove(rel);
+        snapFile.writeAsStringSync(jsonEncode(snap));
+      }
+    });
+  }
+}
+
+/// La carpeta actual y las de cada `cd <dir>` o `git -C <dir>` del comando.
+List<String> _dirs(String cwd, String cmd) => [
+  cwd,
+  for (final m in _dirArg.allMatches(cmd)) _resolve(cwd, m[1]!.replaceAll(RegExp('^["\']|["\']\$'), '')),
+];
 
 String _resolve(String cwd, String p) {
   if (p.startsWith('~/')) p = '${Platform.environment['HOME']}${p.substring(1)}';
