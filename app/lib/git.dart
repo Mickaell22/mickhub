@@ -683,3 +683,51 @@ Future<void> shelveParts(String repo, String name, {required List<String> whole,
     await tmp.delete(recursive: true);
   }
 }
+
+/// Días que pueden separar dos partes de un mismo trabajo ("avance" y "final").
+const relatedDays = 7;
+
+/// El commit anterior y el siguiente que parecen el mismo trabajo partido en
+/// varios commits: mismo autor, sin merges, a menos de [relatedDays] días y
+/// casi los mismos archivos (la mitad o más de todos los que tocan entre los dos). Busca solo
+/// en la historia de la rama actual.
+// ponytail: heurística de archivos, no entiende el contenido; con más de 50
+// archivos no se busca (línea de comandos larga y casi siempre es un refactor).
+Future<({Commit? before, Commit? after})> relatedCommits(String repo, Commit c, List<FileChange> files) async {
+  final mine = {for (final f in files) f.path};
+  if (mine.isEmpty || mine.length > 50 || c.email.isEmpty) return (before: null, after: null);
+  final common = [
+    'log',
+    '--no-merges',
+    '--fixed-strings',
+    '--author=<${c.email}>',
+    '--full-diff', // con filtro de rutas, que igual liste todos los archivos de cada commit
+    '--name-only',
+    '--format=%x1e%H%x1f%an%x1f%aI%x1f%s%x1f%ae',
+  ];
+  final paths = ['--', ...mine];
+  Future<Commit?> nearest(List<String> range) async {
+    final String out;
+    try {
+      out = await git([...common, ...range, ...paths], cwd: repo);
+    } on GitException {
+      return null; // primer commit (no tiene padre) o rango vacío
+    }
+    for (final rec in out.split('\x1e')) {
+      final lines = rec.split('\n').where((l) => l.isNotEmpty).toList();
+      if (lines.isEmpty) continue;
+      final other = parseLog(lines.first).single;
+      if (other.hash == c.hash || other.date.difference(c.date).inDays.abs() >= relatedDays) continue;
+      final theirs = lines.skip(1).toSet();
+      // Archivos en común sobre todos los que tocan entre los dos (Jaccard).
+      if (theirs.intersection(mine).length >= 0.5 * theirs.union(mine).length) return other;
+    }
+    return null;
+  }
+
+  final r = await Future.wait([
+    nearest(['-n', '20', '${c.hash}^']), // más nuevo primero: el primero que calce es el más cercano
+    nearest(['--reverse', '--ancestry-path', '${c.hash}..HEAD']), // de más viejo a más nuevo
+  ]);
+  return (before: r[0], after: r[1]);
+}

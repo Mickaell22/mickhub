@@ -1616,6 +1616,7 @@ class _HistoryPaneState extends State<HistoryPane> {
   String? _diff;
   final _fileFilter = TextEditingController(); // busca entre los archivos del commit elegido
   CommitSummary? _summary;
+  ({Commit? before, Commit? after}) _related = (before: null, after: null); // mismo trabajo en otros commits
   String? _summaryError; // null = cargando o sin pedir
 
   @override
@@ -1715,9 +1716,36 @@ class _HistoryPaneState extends State<HistoryPane> {
     _loadSummary(c);
     final files = await commitFiles(widget.repo, c.hash);
     if (!mounted || _selected != c) return;
-    setState(() => _files = files);
+    setState(() {
+      _files = files;
+      _related = (before: null, after: null);
+    });
     if (files.isNotEmpty) _selectFile(files.first);
+    final related = await relatedCommits(widget.repo, c, files);
+    if (mounted && _selected == c) setState(() => _related = related);
   }
+
+  /// "Continúa a…" / "Sigue en…": otro commit del mismo trabajo, clicable.
+  Widget _relatedLink(String label, Commit c) => Padding(
+    padding: const EdgeInsets.only(top: 4),
+    child: InkWell(
+      onTap: () => _select(c),
+      child: Text.rich(
+        TextSpan(
+          style: Theme.of(context).textTheme.bodySmall,
+          children: [
+            TextSpan(text: '$label '),
+            TextSpan(
+              text: '${c.shortHash} · ${c.summary}',
+              style: const TextStyle(color: Gh.link),
+            ),
+            TextSpan(text: ' (${timeAgo(c.date)})'),
+          ],
+        ),
+        overflow: TextOverflow.ellipsis,
+      ),
+    ),
+  );
 
   /// Pide el resumen de la IA al abrir el commit (si ya existe, la API lo
   /// devuelve sin volver a gastar tokens).
@@ -1971,6 +1999,8 @@ class _HistoryPaneState extends State<HistoryPane> {
                         ),
                       ],
                     ),
+                    if (_related.before case final b?) _relatedLink('Continúa a', b),
+                    if (_related.after case final a?) _relatedLink('Sigue en', a),
                   ],
                 ),
               ),
