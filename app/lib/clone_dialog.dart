@@ -50,8 +50,8 @@ class _CloneBodyState extends State<_CloneBody> {
     for (final a in widget.settings.accounts)
       for (final t in a.targets) (a, t),
   ];
-  late (Account, Target)? _source = _sources.firstOrNull;
-  late final _dir = TextEditingController(text: widget.settings.reposDir);
+  late (Account, Target)? _source = _sources.where((s) => s.$1.id == widget.settings.profile).firstOrNull ?? _sources.firstOrNull;
+  late final _dir = TextEditingController(text: widget.settings.cloneDirFor(_source?.$1.id));
 
   @override
   void initState() {
@@ -101,7 +101,11 @@ class _CloneBodyState extends State<_CloneBody> {
       _snack('La carpeta de destino no existe.');
       return;
     }
-    if (dir != widget.settings.reposDir) await widget.settings.update((s) => s.reposDir = dir);
+    // La carpeta elegida queda como la de esa cuenta (sin cuentas, la general).
+    final id = _source?.$1.id;
+    if (dir != widget.settings.cloneDirFor(id)) {
+      await widget.settings.update((s) => id == null ? s.reposDir = dir : s.profileDirs = {...s.profileDirs, id: dir});
+    }
     // ponytail: se clona en <carpeta>/<nombre>; si ya existe una carpeta con ese
     // nombre git falla y se muestra el error. Upgrade: <carpeta>/<dueño>/<nombre>.
     final target = '$dir${Platform.pathSeparator}${r.name}';
@@ -152,6 +156,7 @@ class _CloneBodyState extends State<_CloneBody> {
                     setState(() {
                       _source = src;
                       _owner = null;
+                      _dir.text = widget.settings.cloneDirFor(src?.$1.id) ?? _dir.text;
                     });
                     _load();
                   },

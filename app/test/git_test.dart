@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mickhub/git.dart';
 import 'package:mickhub/diff_view.dart';
@@ -102,5 +104,20 @@ void main() {
     final gone = parseSummary('# branch.oid abc\n# branch.head main\n# branch.upstream origin/main\n');
     expect(gone.branch.upstream, isNull);
     expect(parseSummary('# branch.oid (initial)\n# branch.head (detached)\n').branch.name, 'HEAD desacoplado');
+  });
+
+  test('allBranches: un clon trae sus remotas sin local, sin HEAD y sin repetir la que ya es local', () async {
+    final tmp = await Directory.systemTemp.createTemp('mickhub-ramas');
+    addTearDown(() => tmp.delete(recursive: true));
+    final up = '${tmp.path}/up', clone = '${tmp.path}/clone';
+    const id = ['-c', 'user.name=t', '-c', 'user.email=t@t'];
+    await git(['init', '-q', '-b', 'main', up]);
+    await git([...id, 'commit', '-q', '--allow-empty', '-m', 'x'], cwd: up);
+    await git(['branch', 'desarrollo'], cwd: up);
+    await git(['branch', 'U_MMoran'], cwd: up);
+    await git(['clone', '-q', up, clone]);
+    final (local, remote) = await allBranches(clone);
+    expect(local, ['main']);
+    expect(remote, ['origin/U_MMoran', 'origin/desarrollo']);
   });
 }

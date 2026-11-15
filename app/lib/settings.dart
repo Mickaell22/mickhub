@@ -51,6 +51,14 @@ class Settings extends ChangeNotifier {
   /// Comando para "Abrir en la terminal"; vacío = detectarla sola (findTerminal).
   String terminalCommand = '';
 
+  /// Perfil de la lista de repos: id de cuenta ('' = todos).
+  String profile = '';
+
+  /// Carpeta de clonado propia de una cuenta (id -> carpeta); sin entrada, [reposDir].
+  Map<String, String> profileDirs = {};
+
+  String? cloneDirFor(String? accountId) => profileDirs[accountId] ?? reposDir;
+
   /// API de resúmenes con IA (v2). Vacíos = resúmenes apagados.
   String apiUrl = '';
   String apiToken = '';
@@ -83,6 +91,8 @@ class Settings extends ChangeNotifier {
     groups = Map<String, String>.from(j['groups'] ?? {});
     editorCommand = j['editorCommand'] ?? 'code';
     terminalCommand = j['terminalCommand'] ?? '';
+    profile = j['profile'] ?? '';
+    profileDirs = Map<String, String>.from(j['profileDirs'] ?? {});
     apiUrl = j['apiUrl'] ?? '';
     apiToken = j['apiToken'] ?? '';
     trashDays = (j['trashDays'] as num?)?.toInt() ?? 30;
@@ -106,6 +116,8 @@ class Settings extends ChangeNotifier {
         'groups': groups,
         'editorCommand': editorCommand,
         'terminalCommand': terminalCommand,
+        'profile': profile,
+        'profileDirs': profileDirs,
         'apiUrl': apiUrl,
         'apiToken': apiToken,
         'trashDays': trashDays,

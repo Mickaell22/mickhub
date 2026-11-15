@@ -159,7 +159,6 @@ Future<void> showAccountsDialog(BuildContext context, Settings s, Map<String, Se
 /// pudo, explica qué hacer.
 Future<Session> loginWithFeedback(BuildContext context, Account a, {Target? only}) async {
   final issues = only == null ? await login(a) : [?await loginTarget(only)];
-  final session = await checkSession(a);
   if (issues.isNotEmpty && context.mounted) {
     // Si todo se arregla con un comando, no es un error: es un paso que falta.
     final justSteps = issues.every((i) => i.command != null);
@@ -188,7 +187,8 @@ Future<Session> loginWithFeedback(BuildContext context, Account a, {Target? only
       ),
     );
   }
-  return session;
+  // Después del aviso: si pedía correr un comando, ya se corrió y el estado cambió.
+  return checkSession(a);
 }
 
 /// Comando en letra de código con un botón para copiarlo.

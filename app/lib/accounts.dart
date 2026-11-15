@@ -306,7 +306,7 @@ Future<LoginIssue?> loginTarget(Target t) async {
       return LoginIssue(
         'Para conectar GitHub ${t.name}, corre este comando en una terminal. Cuando se abra el navegador, entra con '
         '${t.name} (si ahí ya tienes otra cuenta abierta, pega el código en github.com/login/device desde una ventana '
-        'privada). Al terminar, aprieta Verificar.',
+        'privada). Al terminar, aprieta Entendido y se vuelve a verificar.',
         command: ghLoginCommand(t.name, active: active),
       );
     }

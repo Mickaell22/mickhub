@@ -485,10 +485,11 @@ class _ShellState extends State<Shell> {
     ),
   );
 
-  Future<void> _switchBranch(String name) async {
+  Future<void> _switchBranch(String name, {bool remote = false}) async {
     setState(() => _foldout = Foldout.none);
     try {
-      await git(['switch', name], cwd: _repo);
+      // Una remota crea la local que la sigue, con el mismo nombre.
+      await git(remote ? ['switch', '--track', name] : ['switch', name], cwd: _repo);
     } on GitException catch (e) {
       _snack(e.message);
     }
@@ -1399,14 +1400,65 @@ class _ShellState extends State<Shell> {
     );
   }
 
-  Widget _repoList() => _FilterList(
-    items: _repos,
+  /// Repos del perfil elegido: los de esa cuenta (según el remoto o la forzada)
+  /// y los que no son de ninguna, para que un repo sin remoto no desaparezca.
+  List<String> get _profileRepos {
+    final p = s.profile;
+    if (p.isEmpty || !s.accounts.any((a) => a.id == p)) return _repos;
+    return [
+      for (final r in _repos)
+        if ((accountFor(_origins[r], s.accounts, overrideId: s.repoAccounts[r])?.id ?? p) == p) r,
+    ];
+  }
+
+  /// Personal / Trabajo / Todos: solo con dos cuentas o más.
+  Widget _profileBar() {
+    final active = s.accounts.any((a) => a.id == s.profile) ? s.profile : '';
+    Widget chip(String id, String label) => Padding(
+      padding: const EdgeInsets.only(right: 6),
+      child: ChoiceChip(
+        label: Text(label, style: const TextStyle(fontSize: Gh.fontSizeSm)),
+        selected: active == id,
+        visualDensity: VisualDensity.compact,
+        onSelected: (_) => s.update((x) => x.profile = id),
+      ),
+    );
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(Gh.sp, Gh.sp, Gh.sp, 0),
+      child: Row(
+        children: [
+          const Icon(Icons.person_outline, size: 14, color: Gh.textSecondary),
+          const SizedBox(width: 6),
+          for (final a in s.accounts) chip(a.id, a.label),
+          chip('', 'Todos'),
+        ],
+      ),
+    );
+  }
+
+  Widget _repoList() => s.accounts.length < 2
+      ? _repoFilterList()
+      : Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _profileBar(),
+            Expanded(child: _repoFilterList()),
+          ],
+        );
+
+  Widget _repoFilterList() => _FilterList(
+    key: ValueKey('repos-${s.profile}'),
+    items: _profileRepos,
     label: repoName,
     icon: Icons.book_outlined,
     selected: _repo,
     header: 'Repositorios locales',
     group: (r) => s.groups[r],
-    allGroups: s.allGroups(),
+    // Los grupos vacíos se ven en todos los perfiles; los demás, donde tienen repos.
+    allGroups: [
+      for (final g in s.allGroups())
+        if (!s.groups.values.contains(g)) g,
+    ],
     groupIcon: (g) => groupIcon(s.groupIcons[g]),
     onGroupSecondary: _groupMenu,
     collapsed: s.collapsedGroups.toSet(),
@@ -1433,19 +1485,24 @@ class _ShellState extends State<Shell> {
     onTap: _open,
   );
 
-  Widget _branchList() => FutureBuilder<List<String>>(
-    future: localBranches(_repo!),
-    builder: (_, snap) => _FilterList(
-      items: snap.data ?? const [],
-      label: (b) => b,
-      icon: Icons.call_split,
-      selected: _branch?.name,
-      header: 'Ramas locales',
-      hint: 'Filtrar ramas',
-      emptyText: snap.hasData ? 'No hay ramas.' : 'Cargando…',
-      action: OutlinedButton.icon(onPressed: _newBranch, icon: const Icon(Icons.add, size: 16), label: const Text('Nueva rama')),
-      onTap: (b) => b == _branch?.name ? setState(() => _foldout = Foldout.none) : _switchBranch(b),
-    ),
+  Widget _branchList() => FutureBuilder(
+    future: allBranches(_repo!),
+    builder: (_, snap) {
+      final (local, remote) = snap.data ?? (const <String>[], const <String>[]);
+      return _FilterList(
+        items: [...local, ...remote],
+        label: (b) => b,
+        icon: Icons.call_split,
+        selected: _branch?.name,
+        header: 'Ramas',
+        // Con remotas, dos encabezados plegables y su filtro; sin remotas, la lista plana.
+        group: remote.isEmpty ? null : (b) => remote.contains(b) ? 'Remotas' : 'Locales',
+        hint: 'Filtrar ramas',
+        emptyText: snap.hasData ? 'No hay ramas.' : 'Cargando…',
+        action: OutlinedButton.icon(onPressed: _newBranch, icon: const Icon(Icons.add, size: 16), label: const Text('Nueva rama')),
+        onTap: (b) => b == _branch?.name ? setState(() => _foldout = Foldout.none) : _switchBranch(b, remote: remote.contains(b)),
+      );
+    },
   );
 }
 
@@ -1528,6 +1585,7 @@ class ToolbarButton extends StatelessWidget {
 /// selector para filtrar por grupo; el texto también busca en el nombre del grupo.
 class _FilterList extends StatefulWidget {
   const _FilterList({
+    super.key,
     required this.items,
     required this.label,
     required this.icon,

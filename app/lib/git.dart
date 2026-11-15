@@ -199,8 +199,27 @@ Future<BranchState> branchState(String repo) async => (await repoSummary(repo)).
 Future<void> backgroundFetch(String repo, {Map<String, String> env = const {}}) =>
     git(['fetch', '--prune', '--quiet'], cwd: repo, env: {'GCM_INTERACTIVE': 'never', ...env});
 
-Future<List<String>> localBranches(String repo) async =>
-    LineSplitter.split(await git(['branch', '--format=%(refname:short)'], cwd: repo)).toList();
+/// Ramas locales y, después, las remotas que no tienen local (`origin/x`): un
+/// repo recién clonado solo tiene una local.
+Future<(List<String> local, List<String> remote)> allBranches(String repo) async {
+  final refs = LineSplitter.split(await git(['for-each-ref', '--format=%(refname)', 'refs/heads', 'refs/remotes'], cwd: repo)).toList();
+  const heads = 'refs/heads/', remotes = 'refs/remotes/';
+  final local = [
+    for (final r in refs)
+      if (r.startsWith(heads)) r.substring(heads.length),
+  ];
+  final remote = [
+    for (final r in refs)
+      if (r.startsWith(remotes) && !r.endsWith('/HEAD')) r.substring(remotes.length),
+  ];
+  return (
+    local,
+    [
+      for (final r in remote)
+        if (!local.contains(r.substring(r.indexOf('/') + 1))) r,
+    ],
+  );
+}
 
 class Commit {
   const Commit(this.hash, this.author, this.date, this.summary, {this.email = ''});
