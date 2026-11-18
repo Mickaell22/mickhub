@@ -378,8 +378,23 @@ Future<List<Protected>> protectedFiles(String repo) async {
   return [...skip, for (final p in excl) Protected(p, tracked: false)];
 }
 
+/// Si [path] existe en el último commit. Un archivo nuevo añadido al índice
+/// está en `ls-files` ([isTracked]) pero no aquí.
+Future<bool> inHead(String repo, String path) async {
+  try {
+    await git(['cat-file', '-e', 'HEAD:$path'], cwd: repo);
+    return true;
+  } on GitException {
+    return false;
+  }
+}
+
 Future<void> protect(String repo, FileChange f) async {
-  if (await isTracked(repo, f.path)) {
+  // Fuera del stage primero: skip-worktree sobre un archivo nuevo añadido al
+  // índice lo dejaba ahí (un `git commit` lo subía), y sobre uno con cambios en
+  // el stage el próximo `reset` del commit le borraba la marca.
+  await git(['reset', '-q', '--', f.path], cwd: repo, okCodes: {0, 1, 128});
+  if (await inHead(repo, f.path)) {
     await git(['update-index', '--skip-worktree', '--', f.path], cwd: repo);
   } else {
     final file = await _excludeFile(repo);
@@ -450,41 +465,144 @@ List<Shelf> parseShelves(String out) => [
 
 Future<List<Shelf>> shelves(String repo) async => parseShelves(await git(['stash', 'list', '--format=%gd%x1f%gs%x1f%cI'], cwd: repo));
 
-Future<void> shelve(String repo, String name, List<String> paths) =>
-    git(['stash', 'push', '--include-untracked', '-m', name, '--', ...paths], cwd: repo);
+/// Aparta [paths] y nada más. `git stash push -- <rutas>` guarda igual el
+/// índice ENTERO: un archivo nuevo de otro grupo añadido al índice se colaba en
+/// el apartado y al recuperarlo chocaba ("already exists"). MickHub no usa el
+/// stage (el commit lo vacía antes), así que se vacía también aquí.
+Future<void> shelve(String repo, String name, List<String> paths) async {
+  await git(['reset', '-q'], cwd: repo, okCodes: {0, 1, 128});
+  await git(['stash', 'push', '--include-untracked', '-m', name, '--', ...paths], cwd: repo);
+}
 
-/// Devuelve los archivos del apartado al working tree y lo borra de la lista.
-/// Si esos archivos tienen otros cambios ahora (p. ej. se apartaron solo unos
-/// bloques), `stash pop` se niega; entonces se aplica el apartado como parche
-/// sobre lo actual y, si entra limpio, se borra.
+/// Hash del commit de un apartado (sigue igual aunque cambie su `stash@{n}`).
+Future<String> shelfHash(String repo, Shelf s) async => (await git(['rev-parse', s.ref], cwd: repo)).trim();
+
+/// Lo que dejó [unshelve]: archivos que ya estaban iguales (no se tocaron).
+class Restored {
+  const Restored(this.skipped);
+  final List<String> skipped;
+}
+
+/// Contenido de [path] en [rev] tal como lo dejaría un checkout (finales de
+/// línea de Windows incluidos), o null si no existe ahí.
+Future<List<int>?> _checkoutBytes(String repo, String rev, String path) async {
+  final r = await Process.run('git', ['cat-file', '--filters', '$rev:$path'], workingDirectory: repo, stdoutEncoding: null);
+  return r.exitCode == 0 ? r.stdout as List<int> : null;
+}
+
+bool _sameBytes(List<int>? a, List<int>? b) {
+  if (a == null || b == null) return a == b;
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
+}
+
+/// Devuelve los archivos del apartado al working tree y lo borra de la lista
+/// (antes deja un respaldo, ver [backupShelf]).
 ///
-/// Se revisa antes de intentar el `pop`: si falla a mitad, ya devolvió los
-/// archivos nuevos y el parche choca con ellos ("already exists").
-Future<void> unshelve(String repo, Shelf s) async {
-  final changed = {for (final f in await status(repo)) f.path};
-  final overlaps = (await shelfFiles(repo, s)).any(changed.contains);
-  try {
-    if (overlaps) throw GitException(['stash', 'pop'], 'would be overwritten');
-    await git(['stash', 'pop', s.ref], cwd: repo);
-  } on GitException catch (e) {
-    if (!e.message.contains('would be overwritten')) rethrow;
-    final patch = await git(['stash', 'show', '-p', '--include-untracked', s.ref], cwd: repo);
-    try {
-      await git(['apply', '-'], cwd: repo, stdin: patch);
-    } on GitException {
-      throw GitException([
-        'stash',
-        'pop',
-      ], 'El apartado choca con tus cambios actuales en los mismos archivos. Commitéalos o apártalos y vuelve a intentar.');
+/// Va archivo por archivo y **todo o nada**: primero decide qué hacer con cada
+/// uno y, si alguno choca, no toca ninguno y lo dice por archivo. Antes se
+/// usaba `stash pop`, que al fallar a mitad ya había devuelto parte de los
+/// archivos y dejaba el repo a medias. Por archivo:
+/// - ya igual a lo apartado: se salta;
+/// - sin cambios ahora y apartado sobre la misma versión: se escribe tal cual;
+/// - si no (tiene otros cambios, p. ej. se apartaron solo unos bloques): se
+///   aplica su parte del apartado como parche; si no entra, choca.
+Future<Restored> unshelve(String repo, Shelf s) async {
+  final w = await shelfHash(repo, s);
+  final hasUntracked = (await git(['rev-parse', '--verify', '-q', '$w^3'], cwd: repo, okCodes: {0, 1})).trim().isNotEmpty;
+  final skipped = <String>[], conflicts = <String>[];
+  final writes = <String, List<int>?>{}; // ruta -> contenido (null = borrar)
+  final patches = <String, String>{};
+  for (final p in await shelfFiles(repo, s)) {
+    final f = File('$repo/$p');
+    final now = f.existsSync() ? await f.readAsBytes() : null;
+    var target = await _checkoutBytes(repo, w, p);
+    final untracked = target == null && hasUntracked ? await _checkoutBytes(repo, '$w^3', p) : null;
+    target ??= untracked;
+    if (_sameBytes(now, target)) {
+      skipped.add(p);
+      continue;
     }
-    await dropShelf(repo, s);
+    final head = await _checkoutBytes(repo, 'HEAD', p);
+    final base = untracked != null ? null : await _checkoutBytes(repo, '$w^1', p);
+    if (_sameBytes(now, head) && _sameBytes(base, head)) {
+      writes[p] = target;
+      continue;
+    }
+    final patch = untracked != null
+        ? null // archivo nuevo apartado que ahora existe con otro contenido: no hay base común
+        : await git(['diff', '--binary', '$w^1', w, '--', p], cwd: repo);
+    if (patch == null || patch.trim().isEmpty) {
+      conflicts.add(p);
+      continue;
+    }
+    try {
+      await git(['apply', '--check', '-'], cwd: repo, stdin: patch);
+      patches[p] = patch;
+    } on GitException {
+      conflicts.add(p);
+    }
+  }
+  if (conflicts.isNotEmpty) {
+    throw GitException(
+      ['stash', 'pop'],
+      'No se recuperó nada: estos archivos tienen ahora otros cambios que chocan con el apartado:\n'
+      '${conflicts.map((c) => '  $c').join('\n')}\n'
+      'Commitéalos, apártalos o descártalos y vuelve a intentar. El apartado sigue en la lista.',
+    );
+  }
+  for (final e in writes.entries) {
+    final f = File('$repo/${e.key}');
+    if (e.value == null) {
+      if (f.existsSync()) await f.delete();
+    } else {
+      await f.parent.create(recursive: true);
+      await f.writeAsBytes(e.value!);
+    }
+  }
+  for (final patch in patches.values) {
+    await git(['apply', '-'], cwd: repo, stdin: patch);
+  }
+  await dropShelf(repo, s);
+  return Restored(skipped);
+}
+
+/// Prefijo de los respaldos: cada apartado que se recupera o elimina deja su
+/// commit en `refs/mickhub/respaldos/<ms>`, así un error se deshace con
+/// `git stash store -m <nombre> <hash>` (`mickhub apartados` los lista).
+const backupPrefix = 'refs/mickhub/respaldos';
+
+// ponytail: guarda los últimos 50; los más viejos se borran.
+Future<void> backupShelf(String repo, String hash) async {
+  await git(['update-ref', '$backupPrefix/${DateTime.now().millisecondsSinceEpoch}', hash], cwd: repo);
+  final refs = LineSplitter.split(await git(['for-each-ref', '--format=%(refname)', '--sort=refname', backupPrefix], cwd: repo)).toList();
+  for (final r in refs.take(refs.length > 50 ? refs.length - 50 : 0)) {
+    await git(['update-ref', '-d', r], cwd: repo);
   }
 }
 
-Future<void> dropShelf(String repo, Shelf s) => git(['stash', 'drop', s.ref], cwd: repo);
+/// Respaldos de apartados, del más nuevo al más viejo: (hash, nombre, fecha).
+Future<List<(String, String, DateTime)>> shelfBackups(String repo) async => [
+  for (final l in LineSplitter.split(
+    await git(['for-each-ref', '--sort=-refname', '--format=%(objectname)%1f%(subject)%1f%(creatordate:iso-strict)', backupPrefix], cwd: repo),
+  ))
+    if (l.split('\x1f') case [final h, final s, final d]) (h, s.replaceFirst(RegExp(r'^(?:WIP )?[Oo]n [^:]+: '), ''), DateTime.parse(d)),
+];
 
-Future<List<String>> shelfFiles(String repo, Shelf s) async =>
-    LineSplitter.split(await git(['stash', 'show', '--name-only', '--include-untracked', s.ref], cwd: repo, okCodes: {0, 1})).toList();
+/// Borra el apartado dejando antes un respaldo recuperable.
+Future<void> dropShelf(String repo, Shelf s) async {
+  await backupShelf(repo, await shelfHash(repo, s));
+  await git(['stash', 'drop', s.ref], cwd: repo);
+}
+
+/// Archivos de un apartado (los nuevos incluidos). Sin detectar renombres: con
+/// ellos solo sale la ruta nueva y la vieja no se devolvería.
+Future<List<String>> shelfFiles(String repo, Shelf s) async => LineSplitter.split(
+  await git(['stash', 'show', '--name-only', '--no-renames', '--include-untracked', s.ref], cwd: repo, okCodes: {0, 1}),
+).toList();
 
 // --- Ramas locales ------------------------------------------------------------
 

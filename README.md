@@ -24,7 +24,7 @@ Necesita `git` instalado; en Windows, con el Git Credential Manager (viene con G
 
 Al abrir un commit en el Historial, MickHub muestra qué hizo de verdad, escrito por DeepSeek a partir del diff. Corre en una API propia (`api/`, FastAPI + Postgres) para que la key de DeepSeek no viaje a cada equipo; cada commit se resume una sola vez y los merges no gastan tokens. La pestaña **Resúmenes** busca entre todo lo resumido, en el repo abierto o en todos, y resume los últimos 50 commits de una vez. En Cambios, el botón con chispas del campo Resumen escribe el mensaje del commit a partir de lo marcado (con una pista opcional de qué hiciste).
 
-1. Desplegar `api/` (en Railway: un servicio con la carpeta `api/` y un Postgres) con las variables de [`api/.env.example`](./api/.env.example).
+1. Correr `api/` con las variables de [`api/.env.example`](./api/.env.example): **en local** (API y Postgres en este equipo, solo en `127.0.0.1`) o **en la nube** (Railway: un servicio con la carpeta `api/` y un Postgres). [`docs/INSTALACION.md`](./docs/INSTALACION.md) es una guía paso a paso para que Claude Code la instale en cualquiera de los dos modos.
 2. En el `settings.json` de MickHub, poner `apiUrl` (la URL de la API) y `apiToken` (el mismo `MICKHUB_API_TOKEN`). Vacíos, el panel no aparece.
 
 ## Claude Code por MickHub (opcional)
@@ -35,6 +35,6 @@ El comando `mickhub` (en `cli/`) le da a cada sesión de Claude Code su propio g
 cd cli && dart pub get && dart compile exe bin/mickhub.dart -o ~/.local/bin/mickhub
 ```
 
-Luego, en `~/.claude/settings.json`, un hook `PreToolUse` y otro `PostToolUse` con `"matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit"` y `"command": "mickhub hook"`. Con eso, en los repos de MickHub, `git commit` y `git push` directos quedan bloqueados y Claude usa `mickhub commit` / `mickhub push`. `mickhub --help` lista el resto.
+Luego, en `~/.claude/settings.json`, un hook `PreToolUse` y otro `PostToolUse` con `"matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit"` y `"command": "mickhub hook"`. Con eso, en los repos de MickHub, `git commit` y `git push` directos quedan bloqueados y Claude usa `mickhub commit` / `mickhub push`. `mickhub --help` lista el resto (también `apartados`, `apartar`, `recuperar`, `protegidos`, `proteger` y `desproteger`, para ver y arreglar desde la terminal lo mismo que en la app).
 
 Estado: en desarrollo (v1). Ya reemplaza a GitHub Desktop en lo diario: cambios, commit, historial con búsqueda, conflictos, ramas locales, apartados, candado de cambios locales y cuentas de GitHub y Azure DevOps a la vez. Detalles en [CLAUDE.md](./CLAUDE.md).

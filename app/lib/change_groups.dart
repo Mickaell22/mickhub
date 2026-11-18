@@ -26,12 +26,16 @@ class ChangeGroups {
     Set<String>? collapsed,
     Map<String, String>? sessions,
     Map<String, Map<String, List<String>>>? commits,
+    Map<String, Map<String, String>>? shelved,
+    Set<String>? protectedGroups,
   }) : names = names ?? [],
        files = files ?? {},
        hunks = hunks ?? {},
        collapsed = collapsed ?? {},
        sessions = sessions ?? {},
-       commits = commits ?? {};
+       commits = commits ?? {},
+       shelved = shelved ?? {},
+       protectedGroups = protectedGroups ?? {};
 
   /// Grupos en el orden en que se muestran.
   List<String> names;
@@ -59,6 +63,15 @@ class ChangeGroups {
   /// subido, y el grupo no se ve vacío mientras tenga commits sin subir. Se
   /// conserva aunque el grupo se borre.
   Map<String, Map<String, List<String>>> commits;
+
+  /// Hash del commit de un apartado -> (ruta -> grupo que tenía al apartarla).
+  /// Al recuperarlo, cada archivo vuelve a ese grupo aunque mientras tanto otra
+  /// cosa lo haya reclamado (pasaba: caían en el grupo de la sesión de Claude).
+  Map<String, Map<String, String>> shelved;
+
+  /// Grupos protegidos enteros: lo que entre después (grupo activo, `mover`,
+  /// lo que edita una sesión) se protege solo ([protectJoined]).
+  Set<String> protectedGroups;
 
   /// Anota qué archivos de cada grupo entraron en [hash] ("Sin grupo" no se anota).
   // ponytail: solo los últimos 5000 commits; los más viejos pierden la etiqueta.
@@ -94,6 +107,10 @@ class ChangeGroups {
             ? {for (final g in e.value as List) g as String: <String>[]} // formato del primer día: solo nombres
             : {for (final g in (e.value as Map).entries) g.key as String: List<String>.from(g.value as List)},
     },
+    shelved: {
+      for (final e in ((j['shelved'] ?? const {}) as Map).entries) e.key as String: Map<String, String>.from(e.value as Map),
+    },
+    protectedGroups: Set<String>.from(j['protectedGroups'] ?? const []),
   ).._extra = Map.of(j);
 
   /// Todo lo leído del JSON, también claves que esta versión no conoce: se
@@ -110,6 +127,8 @@ class ChangeGroups {
     'collapsed': collapsed.toList(),
     'sessions': sessions,
     'commits': commits,
+    'shelved': shelved,
+    'protectedGroups': protectedGroups.toList(),
   };
 
   /// Carpeta `<.git>/mickhub` del repo (grupos, candado y fotos de sesiones).
@@ -234,6 +253,22 @@ class ChangeGroups {
     return dirty;
   }
 
+  /// Olvida lo que ya no tiene cambios: ni en el working tree ([changed]) ni
+  /// guardado en un apartado ([kept], sus archivos, para que al recuperarlos
+  /// vuelvan a su grupo; los de GitHub Desktop al cambiar de rama también son
+  /// apartados). Así `files` no acumula rutas viejas (llegó a tener 47). Los
+  /// registros de apartados que ya no existen ([liveShelves]) también se van.
+  /// Devuelve true si algo cambió.
+  bool prune(Iterable<String> changed, Iterable<String> kept, Iterable<String> liveShelves) {
+    final keep = {...changed, ...kept};
+    final live = liveShelves.toSet();
+    final n = files.length + hunks.length + shelved.length;
+    files.removeWhere((p, _) => !keep.contains(p));
+    hunks.removeWhere((p, _) => !keep.contains(p));
+    shelved.removeWhere((h, _) => !live.contains(h));
+    return files.length + hunks.length + shelved.length != n;
+  }
+
   /// Olvida el grupo de [paths]: se commitearon o descartaron, así que si
   /// vuelven a cambiar es otro cambio (va al grupo activo).
   void forget(Iterable<String> paths) {
@@ -321,6 +356,7 @@ class ChangeGroups {
       m.updateAll((_, g) => g == from ? to : g);
     }
     if (collapsed.remove(from)) collapsed.add(to);
+    if (protectedGroups.remove(from)) protectedGroups.add(to);
   }
 
   /// Borra el grupo; sus cambios pasan a "Sin grupo" (no se toca ningún archivo).
@@ -333,6 +369,7 @@ class ChangeGroups {
     }
     hunks.removeWhere((_, m) => m.isEmpty);
     collapsed.remove(group);
+    protectedGroups.remove(group);
     sessions.removeWhere((_, g) => g == group);
   }
 
@@ -347,6 +384,7 @@ class ChangeGroups {
     names.remove(from);
     if (active == from) active = to;
     collapsed.remove(from);
+    if (protectedGroups.remove(from)) protectedGroups.add(to);
   }
 
   /// Grupo de la sesión [id] de Claude Code; si no tiene, crea "Sesión xxxx".
@@ -415,4 +453,106 @@ List<String> hunkKeys(String diff) {
   }
   close();
   return keys;
+}
+
+/// Aparta (ver [shelveParts]) y anota de qué grupo era cada archivo, para
+/// devolverlo ahí al recuperarlo ([unshelveGrouped]). Lo usan la app y `mickhub`.
+Future<void> shelveGrouped(String repo, String name, {required List<String> whole, Map<String, (String, Set<int>)> parts = const {}}) async {
+  Future<String> top() async => (await git(['rev-parse', '-q', '--verify', 'refs/stash'], cwd: repo, okCodes: {0, 1})).trim();
+  final before = await top();
+  await shelveParts(repo, name, whole: whole, parts: parts);
+  final hash = await top();
+  if (hash.isEmpty || hash == before) return; // no había nada que apartar
+  await ChangeGroups.update(repo, (g) {
+    if (g.names.isEmpty && g.files.isEmpty) return; // repo sin grupos: no se escribe el JSON
+    g.shelved[hash] = {for (final p in [...whole, ...parts.keys]) p: g.groupOf(p)};
+  });
+}
+
+/// Recupera el apartado (ver [unshelve]) y devuelve cada archivo al grupo que
+/// tenía al apartarlo. Los que ya tenían cambios antes de recuperar se quedan
+/// donde estaban (esos cambios no son del apartado). Un grupo que se borró
+/// mientras tanto se vuelve a crear.
+Future<Restored> unshelveGrouped(String repo, Shelf s) async {
+  final hash = await shelfHash(repo, s);
+  final before = {for (final f in await status(repo)) f.path};
+  final r = await unshelve(repo, s);
+  await ChangeGroups.update(repo, (g) {
+    final rec = g.shelved.remove(hash);
+    if (rec == null) return;
+    for (final MapEntry(key: path, value: group) in rec.entries) {
+      if (before.contains(path)) continue;
+      if (group.isNotEmpty && !g.names.contains(group)) g.names = [...g.names, group];
+      g.files[path] = group;
+    }
+  });
+  return r;
+}
+
+/// Pone grupos.json al día con git: asigna lo nuevo al grupo activo
+/// ([ChangeGroups.sync]) y olvida lo que ya no tiene cambios, ni está apartado
+/// ni protegido ([ChangeGroups.prune]). La app y `mickhub` lo corren después de
+/// commitear, apartar y recuperar, y `mickhub estado` antes de mostrar: así los
+/// dos calculan lo mismo (antes el CLI mostraba en "Sin grupo" lo que la app
+/// ponía en el grupo activo).
+Future<ChangeGroups> reconcile(String repo) async {
+  final (files, list, locked) = await (status(repo), shelves(repo), protectedFiles(repo)).wait;
+  final changed = [for (final f in files) ...[f.path, ?f.oldPath]];
+  final (inShelves, hashes) = await (
+    Future.wait(list.map((s) => shelfFiles(repo, s))),
+    Future.wait(list.map((s) => shelfHash(repo, s))),
+  ).wait;
+  final g = await ChangeGroups.update(repo, (g) {
+    g.sync(files.map((f) => f.path));
+    g.prune(changed, [...inShelves.expand((x) => x), ...locked.map((p) => p.path)], hashes);
+  });
+  await protectJoined(repo, g, files);
+  return g;
+}
+
+/// Protege los archivos de [files] que están (enteros) en un grupo protegido.
+/// Los repartidos con otro grupo no: no se puede proteger medio archivo.
+/// Devuelve las rutas que protegió.
+Future<List<String>> protectJoined(String repo, ChangeGroups g, List<FileChange> files) async {
+  if (g.protectedGroups.isEmpty) return const [];
+  final done = <String>[];
+  for (final f in files) {
+    if (g.hunks.containsKey(f.path) || !g.protectedGroups.contains(g.groupOf(f.path))) continue;
+    await protect(repo, f);
+    done.add(f.path);
+  }
+  return done;
+}
+
+/// Protege el grupo entero y lo marca para que lo que entre después también se
+/// proteja. Devuelve (protegidos, repartidos que quedaron sin proteger).
+Future<(List<String>, List<String>)> protectGroup(String repo, String group) async {
+  final g = await ChangeGroups.update(repo, (g) => g.protectedGroups.add(group));
+  final files = await status(repo);
+  final split = [
+    for (final f in files)
+      if (g.hunks[f.path]?.containsValue(group) ?? false) f.path,
+  ];
+  return (await protectJoined(repo, g, files), split);
+}
+
+/// Quita la marca y desprotege todo lo del grupo: vuelve a Cambios en su grupo.
+Future<List<String>> unprotectGroup(String repo, String group) async {
+  final g = await ChangeGroups.update(repo, (g) => g.protectedGroups.remove(group));
+  final done = <String>[];
+  for (final p in await protectedFiles(repo)) {
+    if (g.groupOf(p.path) != group) continue;
+    await unprotect(repo, p);
+    done.add(p.path);
+  }
+  return done;
+}
+
+/// Desprotege un archivo suelto. Si su grupo está protegido lo saca a "Sin
+/// grupo": si se quedara, se volvería a proteger solo.
+Future<void> unprotectFile(String repo, Protected p) async {
+  await ChangeGroups.update(repo, (g) {
+    if (g.protectedGroups.contains(g.groupOf(p.path))) g.files[p.path] = '';
+  });
+  await unprotect(repo, p);
 }

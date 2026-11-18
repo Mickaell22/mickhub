@@ -26,6 +26,14 @@ mickhub: MickHub desde la terminal (para Claude Code).
   mickhub push [args de git push]     sube con la cuenta del repo
   mickhub pull                        trae con la cuenta del repo
 
+  mickhub apartados                   apartados (stash) con sus grupos, y respaldos
+  mickhub apartar [--grupo G] [-m <nombre>]
+                                      aparta tu grupo (o G), solo sus archivos y bloques
+  mickhub recuperar <n|nombre>        devuelve un apartado, cada archivo a su grupo
+  mickhub protegidos                  archivos protegidos (nunca se commitean), por grupo
+  mickhub proteger <ruta>... | --grupo G
+  mickhub desproteger <ruta>... | --grupo G
+
 Opción global: -C <carpeta> (por defecto, la actual).
 La sesión sale de CLAUDE_CODE_SESSION_ID.''';
 
@@ -41,7 +49,13 @@ Future<void> main(List<String> argv) async {
     stdout.writeln(_help);
     return;
   }
-  if (args.first == 'hook') return _hook();
+  if (args.first == 'hook') {
+    await _hook();
+    // Salida explícita: si stdin quedó abierto (tope de [_hook]), la VM seguiría
+    // viva esperándolo y Claude Code cortaría el hook a los 10 s.
+    await stdout.flush();
+    exit(exitCode);
+  }
   try {
     final repo = await _toplevel(dir);
     if (repo == null) _fail('No es un repo de git: $dir');
@@ -59,6 +73,18 @@ Future<void> main(List<String> argv) async {
         await _push(repo, rest);
       case 'pull':
         await _pull(repo);
+      case 'apartados':
+        await _shelves(repo);
+      case 'apartar':
+        await _shelve(repo, rest);
+      case 'recuperar':
+        await _restore(repo, rest.join(' ').trim());
+      case 'protegidos':
+        await _protected(repo);
+      case 'proteger':
+        await _protect(repo, rest, on: true);
+      case 'desproteger':
+        await _protect(repo, rest, on: false);
       default:
         _fail('Comando desconocido: ${args.first}\n\n$_help');
     }
@@ -181,13 +207,16 @@ Future<Map<String, String>> _diffs(String repo, List<FileChange> files) async {
 
 Future<void> _status(String repo) async {
   final b = await branchState(repo);
+  final g = await reconcile(repo); // lo mismo que calcula la app antes de mostrar
   final files = await status(repo);
-  final g = await ChangeGroups.load(repo);
   final mine = g.sessions[_session];
   stdout.writeln(
     'Rama ${b.name}${b.upstream == null ? ' (sin publicar)' : ''}${b.ahead > 0 ? ' · ${b.ahead} para subir' : ''}'
     '${b.behind > 0 ? ' · ${b.behind} para traer' : ''}',
   );
+  final (locked, shelved) = await (protectedFiles(repo), shelves(repo)).wait;
+  if (locked.isNotEmpty) stdout.writeln('Protegidos: ${locked.length} (`mickhub protegidos`)');
+  if (shelved.isNotEmpty) stdout.writeln('Apartados: ${shelved.length} (`mickhub apartados`)');
   if (files.isEmpty) return stdout.writeln('Sin cambios.');
   final diffs = await _diffs(repo, files.where((f) => g.hunks.containsKey(f.path)).toList());
   final byGroup = <String, List<String>>{};
@@ -232,22 +261,41 @@ Future<void> _name(String repo, String name) async {
 Future<void> _move(String repo, List<String> rest) async {
   final opt = _option(rest, '--grupo');
   if (rest.isEmpty) _fail('Uso: mickhub mover <ruta>... [--grupo G]');
-  final changed = {for (final f in await status(repo)) f.path};
-  await _locked(repo, (g, _) async {
+  final changed = [for (final f in await status(repo)) f.path];
+  final moved = <String>[];
+  final group = await _locked(repo, (g, _) async {
     final group = opt ?? g.sessionGroup(_session.isEmpty ? _fail('Falta --grupo (no hay sesión).') : _session);
     if (!g.names.contains(group)) g.names = [...g.names, group];
     for (final p in rest) {
-      final rel = _relative(repo, p);
-      if (!changed.contains(rel)) stderr.writeln('Sin cambios (igual queda asignado): $rel');
+      final rel = _match(changed, _relative(repo, p));
+      if (rel == null) {
+        stderr.writeln('Sin cambios, no se asigna: ${_relative(repo, p)}');
+        continue;
+      }
       g.moveFile(rel, group);
+      moved.add(rel);
     }
+    return group;
   });
+  // Se relee del disco: lo que se confirma es lo que después muestra `estado`.
+  final g = await ChangeGroups.load(repo);
+  for (final p in moved) {
+    stdout.writeln('${g.groupOf(p) == group ? 'En "$group"' : 'NO quedó en "$group" (está en "${g.groupOf(p)}")'}: $p');
+  }
+  if (moved.length < rest.length) exitCode = 1;
 }
 
-/// Ruta relativa al repo, con `/`.
+/// La ruta de git que corresponde a [rel] (en Windows sin distinguir mayúsculas:
+/// "notas.sql" y "Notas.sql" son el mismo archivo y la clave debe ser la de git).
+String? _match(Iterable<String> paths, String rel) => paths.where((p) => _norm(p) == _norm(rel)).firstOrNull;
+
+/// Ruta relativa al repo, con `/`. Conserva las mayúsculas: antes salía de
+/// [_norm], que en Windows la pasaba a minúsculas, y el grupo se guardaba con
+/// una clave que no coincidía con la de git (el archivo seguía "Sin grupo").
 String _relative(String repo, String p) {
-  final abs = _norm(File(p).absolute.path), root = _norm(repo);
-  return abs.startsWith('$root/') ? abs.substring(root.length + 1) : _norm(p);
+  final abs = File(p).absolute.path.replaceAll('\\', '/');
+  final root = _norm(repo);
+  return _norm(abs).startsWith('$root/') ? abs.substring(root.length + 1) : p.replaceAll('\\', '/');
 }
 
 String? _option(List<String> args, String name) {
@@ -274,29 +322,12 @@ Future<void> _commit(String repo, List<String> rest) async {
   final text = messages.join('\n');
   if (_forbidden.hasMatch(text)) _fail('El mensaje trae una firma o trailer de autoría prohibido. Quítalo.');
 
-  final files = await status(repo);
-  final g = await ChangeGroups.load(repo);
+  final g = await reconcile(repo);
   final group = opt ?? g.sessions[_session];
   if (group == null) _fail('Tu sesión todavía no tiene grupo (no editó nada). Usa --grupo o `mickhub mover`.');
-  final diffs = await _diffs(repo, files.where((f) => g.hunks.containsKey(f.path)).toList());
-  final whole = <FileChange>[];
-  final partial = <String, String>{};
-  for (final f in files) {
-    if (!g.hunks.containsKey(f.path)) {
-      if (g.groupOf(f.path) == group) whole.add(f);
-      continue;
-    }
-    final hg = g.hunkGroups(f.path, diffs[f.path]!);
-    final idx = {
-      for (var i = 0; i < hg.length; i++)
-        if (hg[i] == group) i,
-    };
-    if (idx.length == hg.length && idx.isNotEmpty) {
-      whole.add(f);
-    } else if (idx.isNotEmpty) {
-      partial[f.path] = selectHunks(diffs[f.path]!, idx)!;
-    }
-  }
+  if (g.protectedGroups.contains(group)) _fail('El grupo "$group" está protegido: nunca se commitea. `mickhub desproteger --grupo "$group"` lo libera.');
+  final (whole, parts) = await _groupParts(repo, g, group);
+  final partial = {for (final e in parts.entries) e.key: selectHunks(e.value.$1, e.value.$2)!};
   if (whole.isEmpty && partial.isEmpty) _fail('El grupo "$group" no tiene cambios. `mickhub estado` muestra qué hay.');
 
   final origin = await originUrl(repo);
@@ -327,11 +358,174 @@ Future<void> _commit(String repo, List<String> rest) async {
       renamed = name;
     }
   });
+  await reconcile(repo);
   stdout.write(await git(['log', '-1', '--format=%h %s'], cwd: repo));
   stdout.writeln(
     '${whole.length + partial.length} archivo(s) del grupo "$group"${partial.isEmpty ? '' : ' (${partial.length} en parte)'}.',
   );
   if (renamed != null) stdout.writeln('El grupo no tenía nombre: ahora se llama "$renamed" (`mickhub grupo` lo cambia).');
+}
+
+/// Lo de [group]: archivos enteros y, de los repartidos con otros grupos, su
+/// diff y los índices de sus bloques. Lo protegido no sale en `status`, así que
+/// nunca entra (ni con `--grupo`).
+Future<(List<FileChange>, Map<String, (String, Set<int>)>)> _groupParts(String repo, ChangeGroups g, String group) async {
+  final files = await status(repo);
+  final diffs = await _diffs(repo, files.where((f) => g.hunks.containsKey(f.path)).toList());
+  final whole = <FileChange>[];
+  final parts = <String, (String, Set<int>)>{};
+  for (final f in files) {
+    if (!g.hunks.containsKey(f.path)) {
+      if (g.groupOf(f.path) == group) whole.add(f);
+      continue;
+    }
+    final hg = g.hunkGroups(f.path, diffs[f.path]!);
+    final idx = {
+      for (var i = 0; i < hg.length; i++)
+        if (hg[i] == group) i,
+    };
+    if (idx.length == hg.length && idx.isNotEmpty) {
+      whole.add(f);
+    } else if (idx.isNotEmpty) {
+      parts[f.path] = (diffs[f.path]!, idx);
+    }
+  }
+  return (whole, parts);
+}
+
+// --- Apartados y protegidos ---------------------------------------------------------------
+// Lo mismo que la app (secciones Apartados y Protegidos), para que desde la
+// terminal se pueda ver y arreglar sin abrirla.
+
+Future<void> _shelves(String repo) async {
+  final g = await ChangeGroups.load(repo);
+  final list = await shelves(repo);
+  if (list.isEmpty) stdout.writeln('Sin apartados.');
+  for (var i = 0; i < list.length; i++) {
+    final s = list[i];
+    final files = await shelfFiles(repo, s);
+    final rec = g.shelved[await shelfHash(repo, s)] ?? const {};
+    final groups = {for (final f in files) rec[f] ?? g.groupOf(f)}.where((x) => x.isNotEmpty);
+    stdout.writeln('$i  ${s.name}  (${s.branch}, ${files.length} archivo(s)${groups.isEmpty ? '' : ', grupo ${groups.join(', ')}'})');
+    for (final f in files) {
+      stdout.writeln('     $f');
+    }
+  }
+  final backups = await shelfBackups(repo);
+  if (backups.isEmpty) return;
+  stdout.writeln('\nRespaldos de apartados recuperados o eliminados (el más nuevo primero):');
+  for (final (h, name, date) in backups.take(10)) {
+    stdout.writeln('  ${h.substring(0, 10)}  $name  ${date.toLocal()}');
+  }
+  stdout.writeln('Para volver a ponerlo en la lista: git stash store -m "<nombre>" <hash>');
+}
+
+Future<void> _shelve(String repo, List<String> rest) async {
+  final opt = _option(rest, '--grupo');
+  final name = _option(rest, '-m');
+  final g = await reconcile(repo);
+  final group = opt ?? g.sessions[_session] ?? _fail('Tu sesión no tiene grupo: usa --grupo G.');
+  if (!g.names.contains(group)) _fail('No existe el grupo "$group". `mickhub estado` muestra los grupos.');
+  final (whole, parts) = await _groupParts(repo, g, group);
+  if (whole.isEmpty && parts.isEmpty) _fail('El grupo "$group" no tiene cambios.');
+  final title = name ?? group;
+  await shelveGrouped(
+    repo,
+    title,
+    whole: [
+      for (final f in whole) ...[f.path, ?f.oldPath],
+    ],
+    parts: parts,
+  );
+  await reconcile(repo);
+  stdout.writeln(
+    'Apartado "$title": ${whole.length + parts.length} archivo(s) de "$group"'
+    '${parts.isEmpty ? '' : ' (${parts.length} en parte)'}. `mickhub recuperar "$title"` lo devuelve.',
+  );
+}
+
+Future<void> _restore(String repo, String which) async {
+  if (which.isEmpty) _fail('Uso: mickhub recuperar <n|nombre>');
+  final list = await shelves(repo);
+  final n = int.tryParse(which);
+  final s =
+      (n != null && n >= 0 && n < list.length ? list[n] : list.where((s) => s.name == which).firstOrNull) ??
+      _fail('No hay un apartado "$which". `mickhub apartados` los lista.');
+  final r = await unshelveGrouped(repo, s);
+  await reconcile(repo);
+  stdout.writeln('Recuperado "${s.name}" (queda un respaldo, ver `mickhub apartados`).');
+  if (r.skipped.isNotEmpty) stdout.writeln('Ya estaban iguales, no se tocaron: ${r.skipped.join(', ')}');
+}
+
+Future<void> _protected(String repo) async {
+  final g = await ChangeGroups.load(repo);
+  final list = await protectedFiles(repo);
+  if (list.isEmpty) return stdout.writeln('Sin protegidos.');
+  final by = <String, List<Protected>>{};
+  for (final p in list) {
+    by.putIfAbsent(g.groupOf(p.path), () => []).add(p);
+  }
+  for (final e in by.entries) {
+    stdout.writeln(
+      '${e.key.isEmpty ? 'Sin grupo' : e.key} (${e.value.length})'
+      '${g.protectedGroups.contains(e.key) ? '  [grupo protegido: lo que entre se protege solo]' : ''}',
+    );
+    for (final p in e.value) {
+      stdout.writeln('  ${p.path}${p.tracked ? '' : '  (nuevo: .git/info/exclude)'}');
+    }
+  }
+}
+
+Future<void> _protect(String repo, List<String> rest, {required bool on}) async {
+  final opt = _option(rest, '--grupo');
+  if (opt == null && rest.isEmpty) _fail('Uso: mickhub ${on ? '' : 'des'}proteger <ruta>... | --grupo G');
+  final g = await reconcile(repo);
+  final done = <String>[];
+  if (opt != null) {
+    if (!g.names.contains(opt)) _fail('No existe el grupo "$opt".');
+    if (on) {
+      final (prot, split) = await protectGroup(repo, opt);
+      for (final p in split) {
+        stderr.writeln('Repartido con otro grupo, no se protege a medias: $p');
+      }
+      stdout.writeln('Grupo "$opt" protegido: ${prot.length} archivo(s) ahora y lo que entre después.');
+    } else {
+      final un = await unprotectGroup(repo, opt);
+      stdout.writeln('Grupo "$opt" desprotegido: ${un.length} archivo(s) vuelven a Cambios.');
+    }
+    return;
+  }
+  if (on) {
+    final files = await status(repo);
+    final targets = opt != null
+        ? files.where((f) => g.groupOf(f.path) == opt || (g.hunks[f.path]?.containsValue(opt) ?? false)).toList()
+        : [
+            for (final p in rest)
+              files.where((f) => _norm(f.path) == _norm(_relative(repo, p))).firstOrNull ?? _fail('Sin cambios: ${_relative(repo, p)}'),
+          ];
+    for (final f in targets) {
+      if (g.hunks.containsKey(f.path)) {
+        stderr.writeln('Repartido con otro grupo, no se protege a medias: ${f.path}');
+        continue;
+      }
+      await protect(repo, f);
+      done.add(f.path);
+    }
+  } else {
+    final locked = await protectedFiles(repo);
+    final targets = opt != null
+        ? locked.where((p) => g.groupOf(p.path) == opt).toList()
+        : [
+            for (final r in rest)
+              locked.where((p) => _norm(p.path) == _norm(_relative(repo, r))).firstOrNull ?? _fail('No está protegido: ${_relative(repo, r)}'),
+          ];
+    for (final p in targets) {
+      await unprotectFile(repo, p);
+      done.add(p.path);
+    }
+  }
+  if (done.isEmpty) _fail('Nada que ${on ? '' : 'des'}proteger${opt == null ? '' : ' en "$opt"'}.');
+  stdout.writeln('${on ? 'Protegidos' : 'Desprotegidos'} ${done.length}: ${done.join(', ')}');
 }
 
 Future<void> _push(String repo, List<String> rest) async {
@@ -389,6 +583,13 @@ final _dirArg = RegExp(r'''(?:\bcd|\s-C)\s+("[^"]*"|'[^']*'|[^\s;&|)]+)''');
 
 final _quoted = RegExp('"(?:[^"\\\\]|\\\\.)*"|\'[^\']*\'');
 
+// ponytail: mira el comando entero; `git stash pop && sed -i ...` tampoco
+// reparte lo del sed. Upgrade: foto antes y después de cada parte del comando.
+final _movesChanges = RegExp(
+  r'''(^|[;&|(\s])(git\s+(?:(?:-[cC]|--git-dir|--work-tree)\s+(?:"[^"]*"|'[^']*'|\S+)\s+|--?\S+\s+)*'''
+  r'''(stash|checkout|switch|restore|reset|pull|merge|rebase|cherry-pick|revert|am)\b|mickhub(\.exe)?\s)''',
+);
+
 const _editTools = {'Edit', 'Write', 'MultiEdit', 'NotebookEdit'};
 
 /// Lo llama Claude Code antes y después de cada Bash/Edit/Write. Nunca debe
@@ -396,7 +597,9 @@ const _editTools = {'Edit', 'Write', 'MultiEdit', 'NotebookEdit'};
 Future<void> _hook() async {
   Map<String, dynamic> input;
   try {
-    input = jsonDecode(await stdin.transform(utf8.decoder).join()) as Map<String, dynamic>;
+    // Con tope: si stdin no se cierra, mejor no hacer nada que pasar los 10 s
+    // del hook (Claude Code lo corta y avisa en cada mensaje).
+    input = jsonDecode(await stdin.transform(utf8.decoder).join().timeout(const Duration(seconds: 3))) as Map<String, dynamic>;
   } catch (_) {
     return;
   }
@@ -404,7 +607,6 @@ Future<void> _hook() async {
   final session = input['session_id'] as String? ?? '';
   final cwd = input['cwd'] as String? ?? Directory.current.path;
   final toolInput = (input['tool_input'] as Map?) ?? const {};
-  final repos = _mickhubRepos();
 
   // Regla del dueño: Claude commitea pero no sube; el push lo hace él, salvo
   // que lo pida textualmente en su mensaje. Cada mensaje enciende o apaga el
@@ -419,6 +621,9 @@ Future<void> _hook() async {
     }
     return;
   }
+  // Recién aquí: recorrer la carpeta de repos no hace falta para el mensaje del
+  // dueño, que es el hook que se le cortaba por tiempo en Windows.
+  final repos = _mickhubRepos();
   if (event == 'PreToolUse' && tool == 'Bash') {
     final cmd = toolInput['command'] as String? ?? '';
     final bare = cmd.replaceAll(_quoted, 'Q');
@@ -452,7 +657,12 @@ Future<void> _hook() async {
     final String? path = _editTools.contains(tool) ? (toolInput['file_path'] ?? toolInput['notebook_path']) as String? : null;
     if (tool != 'Bash' && path == null) return;
     // En un Bash, el repo de la sesión y los de cada `cd`/`-C` del comando.
-    final dirs = path != null ? [File(path).parent.path] : _dirs(cwd, toolInput['command'] as String? ?? '');
+    final command = toolInput['command'] as String? ?? '';
+    // Un comando que solo mueve cambios que ya existían (recuperar un apartado,
+    // cambiar de rama, traer) no es trabajo de esta sesión: antes se los
+    // quedaba y lo recuperado caía en "Sesión xxxx" en vez de en su grupo.
+    if (path == null && _movesChanges.hasMatch(command.replaceAll(_quoted, 'Q'))) return;
+    final dirs = path != null ? [File(path).parent.path] : _dirs(cwd, command);
     final seen = <String>{};
     final created = <String>[];
     for (final d in dirs) {
@@ -493,7 +703,7 @@ Future<String?> _track(String repo, String? rel, String? event, String session) 
     // Foto de los bloques de antes: lo que aparezca después es de esta sesión.
     final files = [
       for (final f in await status(repo))
-        if (rel == null || f.path == rel) f,
+        if (rel == null || _norm(f.path) == _norm(rel)) f,
     ];
     if (files.length > 300) return null; // ponytail: repo con miles de cambios (build sin ignorar); no se reparte
     final diffs = await _diffs(repo, files);
@@ -511,7 +721,7 @@ Future<String?> _track(String repo, String? rel, String? event, String session) 
   } else if (event == 'PostToolUse') {
     final files = [
       for (final f in await status(repo))
-        if (rel == null || f.path == rel) f,
+        if (rel == null || _norm(f.path) == _norm(rel)) f,
     ];
     if (files.length > 300) return null;
     final diffs = await _diffs(repo, files);

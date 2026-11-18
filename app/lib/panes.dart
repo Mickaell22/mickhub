@@ -178,6 +178,11 @@ class ChangesPane extends StatefulWidget {
 typedef _Snapshot = (List<FileChange>, List<Protected>, List<Shelf>, String?, MergeState, ChangeGroups, Map<String, String>);
 final _snapshots = <String, _Snapshot>{};
 
+/// Mensaje de commit a medio escribir de cada repo (resumen, descripción). El
+/// panel se destruye al pasar a Historial o a otro repo y el mensaje que había
+/// escrito la IA se perdía: había que volver a generarlo.
+final _drafts = <String, (String, String)>{};
+
 class _ChangesPaneState extends State<ChangesPane> {
   List<FileChange> _files = [];
   List<Protected> _protected = [];
@@ -203,7 +208,16 @@ class _ChangesPaneState extends State<ChangesPane> {
   @override
   void initState() {
     super.initState();
-    _summary.addListener(() => setState(() {}));
+    final draft = _drafts[widget.repo];
+    if (draft != null) {
+      _summary.text = draft.$1;
+      _description.text = draft.$2;
+    }
+    _summary.addListener(() {
+      _saveDraft();
+      setState(() {});
+    });
+    _description.addListener(_saveDraft);
     final snap = _snapshots[widget.repo];
     if (snap != null) _apply(snap);
     _load();
@@ -230,6 +244,14 @@ class _ChangesPaneState extends State<ChangesPane> {
       }
     } catch (_) {
       // sin carpeta .git legible: queda el F5 de siempre
+    }
+  }
+
+  void _saveDraft() {
+    if (_summary.text.isEmpty && _description.text.isEmpty) {
+      _drafts.remove(widget.repo);
+    } else {
+      _drafts[widget.repo] = (_summary.text, _description.text);
     }
   }
 
@@ -285,6 +307,11 @@ class _ChangesPaneState extends State<ChangesPane> {
         final paths = files.map((f) => f.path).toList();
         // Con cambios por asignar, se aplica sobre lo último del disco y con candado.
         final groups = loaded.sync(paths) ? await ChangeGroups.update(widget.repo, (g) => g.sync(paths)) : loaded;
+        // Lo que entró a un grupo protegido se protege solo y se relee.
+        if ((await protectJoined(widget.repo, groups, files)).isNotEmpty) {
+          _reload = true;
+          continue;
+        }
         final split = [
           for (final f in files)
             if (groups.hunks.containsKey(f.path)) f,
@@ -597,7 +624,9 @@ class _ChangesPaneState extends State<ChangesPane> {
         menuItem('only', Icons.check_box_outlined, 'Marcar solo este grupo para el commit'),
         if (named) ...[
           menuItem('shelve', Icons.inventory_2_outlined, 'Apartar grupo…'),
-          menuItem('protect', Icons.lock_outline, 'Proteger grupo (nunca subirlo)'),
+          _groups.protectedGroups.contains(group)
+              ? menuItem('unprotect', Icons.lock_open, 'Desproteger grupo')
+              : menuItem('protect', Icons.lock_outline, 'Proteger grupo (nunca subirlo, ni lo que entre después)'),
         ],
         if (rows.isNotEmpty) menuItem('discard', Icons.delete_outline, 'Descartar grupo…', danger: true),
         ..._sessionItems([group], _groups.sessions),
@@ -630,13 +659,12 @@ class _ChangesPaneState extends State<ChangesPane> {
       case 'discard':
         await _discardGroup(group, rows.map((r) => r.$2).toList());
       case 'protect':
-        final whole = rows.where((r) => _groupsOf(r.$2).length == 1).map((r) => r.$2).toList();
-        if (whole.length < rows.length) _snack('Los archivos repartidos con otro grupo no se pueden proteger a medias; se dejaron igual.');
         await _guard(() async {
-          for (final f in whole) {
-            await protect(widget.repo, f);
-          }
+          final (_, split) = await protectGroup(widget.repo, group);
+          if (split.isNotEmpty) _snack('Repartidos con otro grupo, no se protegen a medias: ${split.join(', ')}');
         });
+      case 'unprotect':
+        await _guard(() => unprotectGroup(widget.repo, group));
       case 'expand':
         await _saveGroups((g) => g.collapsed.clear());
       case 'collapse':
@@ -1010,7 +1038,8 @@ class _ChangesPaneState extends State<ChangesPane> {
             children: [
               const Text(
                 'Se guardan con un nombre y desaparecen de Cambios; lo demás se queda. '
-                'Puedes cambiar de rama, hacer otro commit y recuperarlos después desde "Apartados".',
+                'Puedes cambiar de rama, hacer otro commit y recuperarlos después desde "Apartados". '
+                'Para que no se suban nunca pero sigan en tu copia, usa Proteger, no Apartar.',
                 style: TextStyle(color: Gh.textSecondary),
               ),
               const SizedBox(height: Gh.sp),
@@ -1054,7 +1083,7 @@ class _ChangesPaneState extends State<ChangesPane> {
       for (final p in parts.keys) {
         await widget.trash.save(widget.repo, p); // copia de seguridad por si acaso
       }
-      await shelveParts(
+      await shelveGrouped(
         widget.repo,
         name,
         whole: [
@@ -1063,12 +1092,21 @@ class _ChangesPaneState extends State<ChangesPane> {
         ],
         parts: parts,
       );
+      _mutations++;
+      await reconcile(widget.repo);
     });
   }
 
-  /// Recupera un apartado. Sus archivos vuelven solos a su grupo: los grupos
-  /// recuerdan sus archivos aunque se aparten (ver [ChangeGroups.sync]).
-  Future<void> _restoreShelf(Shelf sh) => _guard(() => unshelve(widget.repo, sh));
+  /// Recupera un apartado. Cada archivo vuelve al grupo que tenía al apartarlo
+  /// ([unshelveGrouped]); los que ya estaban iguales se saltan.
+  Future<void> _restoreShelf(Shelf sh) => _guard(() async {
+    final r = await unshelveGrouped(widget.repo, sh);
+    _mutations++;
+    await reconcile(widget.repo);
+    if (r.skipped.isNotEmpty && mounted) {
+      _snack('${r.skipped.length} archivo(s) ya estaban iguales y no se tocaron: ${r.skipped.join(', ')}');
+    }
+  });
 
   Future<void> _shelfMenu(Shelf sh, Offset at) async {
     final action = await showMenu<String>(
@@ -1087,7 +1125,10 @@ class _ChangesPaneState extends State<ChangesPane> {
         builder: (c) => AlertDialog(
           backgroundColor: Gh.bg,
           title: const Text('Eliminar apartado', style: TextStyle(fontSize: 14)),
-          content: Text('¿Eliminar "${sh.name}"? Sus cambios se pierden.'),
+          content: Text(
+            '¿Eliminar "${sh.name}"? Desaparece de la lista; queda un respaldo '
+            '(`mickhub apartados` lo muestra) por si fue un error.',
+          ),
           actions: [
             TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('Cancelar')),
             FilledButton(
@@ -1196,7 +1237,11 @@ class _ChangesPaneState extends State<ChangesPane> {
               ),
             ),
           ),
-          _rowAction('Desproteger', Icons.lock_open, () => _guard(() => unprotect(widget.repo, p))),
+          _rowAction(
+            _groups.protectedGroups.contains(_groups.groupOf(p.path)) ? 'Desproteger (sale del grupo protegido)' : 'Desproteger',
+            Icons.lock_open,
+            () => _guard(() => unprotectFile(widget.repo, p)),
+          ),
         ],
       ),
     );
@@ -1224,7 +1269,8 @@ class _ChangesPaneState extends State<ChangesPane> {
                       const SizedBox(width: 6),
                       Expanded(
                         child: Text(
-                          '${g.isEmpty ? 'Sin grupo' : g} (${byGroup[g]!.length})',
+                          '${g.isEmpty ? 'Sin grupo' : g} (${byGroup[g]!.length})'
+                          '${_groups.protectedGroups.contains(g) ? ' · lo que entre se protege solo' : ''}',
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(fontWeight: FontWeight.w600),
                         ),
@@ -1233,6 +1279,10 @@ class _ChangesPaneState extends State<ChangesPane> {
                         g.isEmpty ? 'Desproteger los sin grupo' : 'Desproteger grupo',
                         Icons.lock_open,
                         () => _guard(() async {
+                          if (g.isNotEmpty) {
+                            await unprotectGroup(widget.repo, g);
+                            return;
+                          }
                           for (final p in byGroup[g]!) {
                             await unprotect(widget.repo, p);
                           }
@@ -1351,6 +1401,7 @@ class _ChangesPaneState extends State<ChangesPane> {
           ],
         ); // si vuelven a cambiar, es otro cambio
       });
+      _groups = await reconcile(widget.repo);
       _summary.clear();
       _description.clear();
       widget.onCommitted();
