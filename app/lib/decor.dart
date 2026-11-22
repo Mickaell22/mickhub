@@ -7,6 +7,8 @@ import 'package:flutter/material.dart';
 import 'look.dart';
 import 'theme.dart';
 
+part 'daily.dart';
+
 // Decoración: escenas dibujadas en los espacios vacíos y una mascota en el hueco
 // de la barra superior (pedido del dueño: "vida visual", que no se sienta todo
 // código). Reglas: todo original con CustomPainter, nada encima de diffs, listas
@@ -264,6 +266,58 @@ const _dragonTop = [
   '.....oooooooooo.',
 ];
 
+const _foxTop = [
+  '..........o...o.',
+  '.........okbbbko',
+  '.oo......obbbbbo',
+  'obbbo....olebelo',
+  'obbbo....ollkllo',
+  'olbbo.....olllo.',
+  '.olboooooooooo..',
+  '..oobbbbbbbbbo..',
+  '...obblllllbbo..',
+  '...ooooooooooo..',
+];
+
+const _bunnyTop = [
+  '.........o.o....',
+  '........opopo...',
+  '........opopo...',
+  '........obobo...',
+  '.......obbbbbo..',
+  '.......obbbebo..',
+  '.......obbbbpo..',
+  '..o...obbbbbo...',
+  '.olooobbbbbbo...',
+  '..oobbbbbbbbo...',
+];
+
+const _penguinTop = [
+  '.......oooo.....',
+  '......okkkko....',
+  '......okkwekyy..',
+  '......okkkkko...',
+  '.....okkwwwko...',
+  '....okkkwwwwko..',
+  '....okkwwwwwko..',
+  '....okkwwwwwko..',
+  '.....okwwwwwko..',
+  '.....okkwwwko...',
+];
+
+const _capyTop = [
+  '................',
+  '................',
+  '.........oo.....',
+  '........obboooo.',
+  '.......obbbbbbbo',
+  '..oooooobbebbbbo',
+  '.obbbbbbbbbbbbdo',
+  'obbbbbbbbbbbbddo',
+  'obbbbbbbbbbbooo.',
+  '.obbbbbbbbbbo...',
+];
+
 final pets = <String, Pet>{
   'gato': Pet(
     'Gato',
@@ -407,6 +461,69 @@ final pets = <String, Pet>{
       'y': Color(0xffffb02e),
     },
     head: (12, 1),
+  ),
+  'zorro': Pet(
+    'Zorro',
+    {
+      'walk0': _legs(_foxTop, ['....ok.....ok...', '....kk.....kk...']),
+      'walk1': _legs(_foxTop, ['...ok..ok.ok..ok', '...kk..kk.kk..kk']),
+      'sit': _legs(_foxTop, ['...okko...okko..', '...kkkk...kkkk..']),
+    },
+    const {
+      'o': Color(0xff3a1a0a),
+      'b': Color(0xffe8742a),
+      'l': Color(0xfffbf2e6),
+      'k': Color(0xff2a1a14),
+      'e': Color(0xff111111),
+    },
+    head: (12, 1),
+  ),
+  'conejo': Pet(
+    'Conejo',
+    {
+      'walk0': _legs(_bunnyTop, ['...ob....obb....', '...oo....ooo....']),
+      'walk1': _legs(_bunnyTop, ['..ob..ob..ob....', '..oo..oo..oo....']),
+      'sit': _legs(_bunnyTop, ['...obbo.obbbo...', '...oooo.ooooo...']),
+    },
+    const {
+      'o': Color(0xff3a3030),
+      'b': Color(0xffe9e2d8),
+      'l': Color(0xffffffff),
+      'p': Color(0xfff08aa0),
+      'e': Color(0xff222222),
+    },
+    head: (10, 0),
+  ),
+  'pinguino': Pet(
+    'Pingüino',
+    {
+      'walk0': _legs(_penguinTop, ['......yy..yy....', '.....yyy.yyy....']),
+      'walk1': _legs(_penguinTop, ['.......yyyy.....', '......yyyyyy....']),
+      'sit': _legs(_penguinTop, ['.....ooooooo....', '................']),
+    },
+    const {
+      'o': Color(0xff0e0f14),
+      'k': Color(0xff2a2f3a),
+      'w': Color(0xfff4f4f4),
+      'e': Color(0xff111111),
+      'y': Color(0xfff2a516),
+    },
+    head: (9, 0),
+  ),
+  'capibara': Pet(
+    'Capibara',
+    {
+      'walk0': _legs(_capyTop, ['..ob......ob....', '..oo......oo....']),
+      'walk1': _legs(_capyTop, ['.ob..ob..ob..ob.', '.oo..oo..oo..oo.']),
+      'sit': _legs(_capyTop, ['.oooooooooooo...', '................']),
+    },
+    const {
+      'o': Color(0xff3a2414),
+      'b': Color(0xffa8754a),
+      'd': Color(0xff6a4428),
+      'e': Color(0xff111111),
+    },
+    head: (11, 3),
   ),
 };
 
@@ -607,7 +724,7 @@ void drawSprite(Canvas c, List<String> rows, Map<String, Color> colors, Offset a
 // Escenas.
 
 class ScenePainter extends CustomPainter {
-  ScenePainter(this.scene, this.clock, {this.strip = false, this.still = false})
+  ScenePainter(this.scene, this.clock, {this.strip = false, this.still = false, this.day})
     : colorsKey = Object.hash(Gh.bg, Gh.blue, Gh.textSecondary),
       super(repaint: still ? null : clock);
   final Scene scene;
@@ -616,6 +733,9 @@ class ScenePainter extends CustomPainter {
   /// Tira de la barra superior (baja) en vez de fondo de pantalla vacía.
   final bool strip;
   final bool still;
+
+  /// Para [Scene.diaria]: qué día del año (1..366); null = hoy.
+  final int? day;
 
   /// Los colores salen de [Gh] al pintar: si cambia la paleta, hay que repintar.
   final int colorsKey;
@@ -627,6 +747,9 @@ class ScenePainter extends CustomPainter {
     canvas.clipRect(Offset.zero & size);
     final p = _P(canvas, size, still ? 3.0 : clock.t, strip);
     switch (scene) {
+      case Scene.diaria:
+        final now = DateTime.now();
+        p.daily(day == null ? dailySceneFor(now) : dailyScene(day!), now);
       case Scene.grafo:
         p.grafo();
       case Scene.ciudad:
@@ -677,7 +800,7 @@ class ScenePainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(ScenePainter old) => old.scene != scene || old.strip != strip || old.still != still || old.colorsKey != colorsKey;
+  bool shouldRepaint(ScenePainter old) => old.scene != scene || old.strip != strip || old.still != still || old.colorsKey != colorsKey || old.day != day;
 }
 
 /// Pinceles y escenas. En una tira (barra superior) todo va abajo y chico; en

@@ -79,9 +79,9 @@ class Settings extends ChangeNotifier {
   String birthday = '';
 
   /// Escenas y mascota. [scene]: 'auto' (la de la paleta), 'ninguna' o el
-  /// nombre de una [Scene]. [pet]: 'ninguna', 'azar' o el nombre de una mascota.
+  /// nombre de una [Scene]; 'diaria' (de fábrica) = una distinta cada día del año. [pet]: 'ninguna', 'azar' o el nombre de una mascota.
   bool decor = true;
-  String scene = 'auto';
+  String scene = 'diaria';
   String pet = 'gato';
 
   File? _file;
@@ -128,7 +128,7 @@ class Settings extends ChangeNotifier {
     skippedSeason = j['skippedSeason'] ?? '';
     birthday = j['birthday'] ?? '';
     decor = j['decor'] ?? true;
-    scene = j['scene'] ?? 'auto';
+    scene = j['scene'] ?? 'diaria';
     pet = j['pet'] ?? 'gato';
   }
 

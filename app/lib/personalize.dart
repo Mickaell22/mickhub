@@ -26,6 +26,9 @@ final _launchPet = pets.keys.elementAt(Random().nextInt(pets.length));
   final scene = switch (s.scene) {
     'auto' => look.scene,
     'ninguna' => null,
+    // Una por día del año, salvo cuando una fiesta llega sola por la fecha: ahí
+    // gana su escena. Si la paleta de fiesta la eligió él, va la del día.
+    'diaria' => look.kind == LookKind.seasonal && look.name != s.look ? look.scene : Scene.diaria,
     final n => Scene.values.where((x) => x.name == n).firstOrNull ?? look.scene,
   };
   final pet = s.pet == 'azar' ? _launchPet : s.pet;
@@ -188,6 +191,60 @@ class _PersonalizeDialogState extends State<_PersonalizeDialog> {
     );
   }
 
+  /// Día del año que se está mirando en el explorador de escenas diarias.
+  late int _day = dayOfYear(DateTime.now());
+
+  /// Recorre las 365 escenas del año: la de hoy y las que vienen.
+  Widget _dayBrowser() {
+    final today = dayOfYear(DateTime.now());
+    final d = dailyScene(_day);
+    final date = DateTime(DateTime.now().year, 1, _day);
+    return Padding(
+      padding: const EdgeInsets.only(top: Gh.sp),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              IconButton(
+                tooltip: 'Día anterior',
+                onPressed: () => setState(() => _day = _day == 1 ? 365 : _day - 1),
+                icon: const Icon(Icons.chevron_left, size: 18),
+              ),
+              Expanded(
+                child: Column(
+                  children: [
+                    Text(d.name, textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.w600)),
+                    Text(
+                      '${date.day} de ${_months[date.month - 1]} · día $_day${_day == today ? ' (hoy)' : ''}',
+                      style: TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
+                    ),
+                  ],
+                ),
+              ),
+              if (_day != today) TextButton(onPressed: () => setState(() => _day = today), child: const Text('Hoy')),
+              IconButton(
+                tooltip: 'Día siguiente',
+                onPressed: () => setState(() => _day = _day % 365 + 1),
+                icon: const Icon(Icons.chevron_right, size: 18),
+              ),
+            ],
+          ),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(Gh.radius),
+            child: Container(
+              height: 150,
+              decoration: BoxDecoration(color: Gh.bg, border: Border.all(color: Gh.border)),
+              child: CustomPaint(
+                painter: ScenePainter(Scene.diaria, decorClock, day: _day, still: MediaQuery.maybeDisableAnimationsOf(context) ?? false),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   String _seasonLine(DateTime now) {
     final season = seasonFor(now);
     if (season == null) return 'Hoy no hay ninguna fecha especial.';
@@ -327,12 +384,13 @@ class _PersonalizeDialogState extends State<_PersonalizeDialog> {
                     items: [
                       DropdownMenuItem(value: 'auto', child: Text('El de la paleta (${active.scene.label})')),
                       const DropdownMenuItem(value: 'ninguna', child: Text('Ninguno')),
-                      for (final sc in Scene.values) DropdownMenuItem(value: sc.name, child: Text(sc.label)),
+                      for (final sc in Scene.values) DropdownMenuItem(value: sc.name, child: Text(sc == Scene.diaria ? '${sc.label} (365)' : sc.label)),
                     ],
                     onChanged: (v) => _change((x) => x.scene = v ?? 'auto'),
                   ),
                 ],
               ),
+            if (s.decor && s.scene == 'diaria') _dayBrowser(),
             if (s.decor) ...[
               _section('Mascota', 'Camina por la barra de arriba. Hazle clic.'),
               Wrap(

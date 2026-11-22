@@ -22,7 +22,7 @@ Necesita `git` instalado; en Windows, con el Git Credential Manager (viene con G
 
 ## Personalización
 
-Ícono de paleta en la barra (o `Ctrl+,`): 24 paletas (la de GitHub Desktop de fábrica, clásicas, temáticas como Retro, Arcade, Aventura de 16 bits y Espacio, y de temporada), que pueden cambiar solas cada día o al abrir. Las fechas especiales (Halloween, Día de Muertos, Navidad, Año Nuevo, San Valentín, Carnaval, Inti Raymi, tu cumpleaños...) llegan solas. Cada paleta trae una escena dibujada para las pantallas vacías y el hueco de la barra, y una mascota en pixel art (gato, perro, pato, slime, robot o dragón) camina por la barra, duerme de noche, festeja cuando commiteas y se pone gorro en las fiestas. Todo original, dibujado por la app, y quieto si el sistema pide menos animaciones.
+Ícono de paleta en la barra (o `Ctrl+,`): 24 paletas (la de GitHub Desktop de fábrica, clásicas, temáticas como Retro, Arcade, Aventura de 16 bits y Espacio, y de temporada), que pueden cambiar solas cada día o al abrir. Las fechas especiales (Halloween, Día de Muertos, Navidad, Año Nuevo, San Valentín, Carnaval, Inti Raymi, tu cumpleaños...) llegan solas. De fábrica, cada día del año trae su propia escena dibujada (365 distintas: faros, molinos, trenes, volcanes, ballenas, auroras, con la luna en su fase real) en las pantallas vacías y el hueco de la barra; también se puede fijar la escena de una paleta. Una mascota en pixel art (gato, perro, pato, slime, robot, dragón, zorro, conejo, pingüino o capibara) camina por la barra, duerme de noche, festeja cuando commiteas y se pone gorro en las fiestas. Todo original, dibujado por la app, y quieto si el sistema pide menos animaciones.
 
 ## Resúmenes con IA (opcional)
 

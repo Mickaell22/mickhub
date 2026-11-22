@@ -1,8 +1,11 @@
 import 'dart:math';
+import 'dart:ui' as ui;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mickhub/decor.dart';
 import 'package:mickhub/look.dart';
+import 'package:mickhub/personalize.dart';
+import 'package:mickhub/settings.dart';
 
 void main() {
   test('temporadas: fechas fijas y móviles (Carnaval sale de la Pascua)', () {
@@ -79,5 +82,49 @@ void main() {
     sim.hearts.clear();
     sim.cheer();
     expect((sim.state, sim.hearts.length, sim.zs.length), ('idle', 3, 0));
+  });
+
+  test('escena del día: 366 distintas, con nombre propio, sin repetir terreno dos días seguidos', () {
+    final days = [for (var d = 1; d <= 366; d++) dailyScene(d)];
+    expect({for (final d in days) (d.terrain, d.landmark, d.time, d.weather)}.length, 366);
+    expect({for (final d in days) d.name}.length, 366);
+    for (var i = 1; i < days.length; i++) {
+      expect(days[i].terrain, isNot(days[i - 1].terrain), reason: 'día ${i + 1}');
+    }
+    expect(dayOfYear(DateTime(2026, 1, 1)), 1);
+    expect(dayOfYear(DateTime(2028, 12, 31)), 366); // bisiesto
+    expect(dailySceneFor(DateTime(2026, 3, 8)).day, 67);
+  });
+
+  test('fase de la luna: llena el 24/11/2026, nueva el 9/11/2026', () {
+    expect(moonPhase(DateTime.utc(2026, 11, 24, 12)), closeTo(.5, .05));
+    final nueva = moonPhase(DateTime.utc(2026, 11, 9, 12));
+    expect(min(nueva, 1 - nueva), lessThan(.05));
+  });
+
+  test('todas las escenas (las 366 diarias incluidas) se pintan sin fallar, en fondo y en tira', () {
+    final rec = ui.PictureRecorder();
+    final c = ui.Canvas(rec);
+    for (final strip in [false, true]) {
+      final size = strip ? const ui.Size(620, 50) : const ui.Size(900, 500);
+      for (final sc in Scene.values) {
+        ScenePainter(sc, decorClock, strip: strip, still: true).paint(c, size);
+      }
+      for (var d = 1; d <= 366; d++) {
+        ScenePainter(Scene.diaria, decorClock, strip: strip, still: true, day: d).paint(c, size);
+      }
+    }
+    rec.endRecording();
+  });
+
+  test('fondo "uno por día": la fiesta que llega por fecha gana; la paleta de fiesta elegida a mano no', () {
+    final s = Settings()..scene = 'diaria';
+    expect(currentLook(s, DateTime(2026, 11, 21)).scene, Scene.diaria);
+    expect(currentLook(s, DateTime(2026, 12, 20)).scene, Scene.navidad);
+    s.look = 'halloween';
+    expect(currentLook(s, DateTime(2026, 11, 21)).look, Look.halloween);
+    expect(currentLook(s, DateTime(2026, 11, 21)).scene, Scene.diaria);
+    s.scene = 'auto';
+    expect(currentLook(s, DateTime(2026, 11, 21)).scene, Scene.halloween);
   });
 }

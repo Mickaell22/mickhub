@@ -8,6 +8,7 @@ import 'theme.dart';
 /// hueco de la barra superior. Todas son originales, hechas con CustomPainter
 /// (`decor.dart`): nada de imágenes ni personajes de terceros.
 enum Scene {
+  diaria('Una distinta cada día'),
   grafo('Constelación de commits'),
   ciudad('Ciudad de noche'),
   bosque('Bosque con luciérnagas'),
