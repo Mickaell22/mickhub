@@ -63,7 +63,7 @@ class SummaryApi {
         'message': info.message,
         'parents': info.parents,
         // Los merges no van a la IA: no hace falta leer su diff.
-        'diff': info.parents > 1 ? '' : _cap(await git(['show', '--format=', '--no-color', c.hash], cwd: repo)),
+        'diff': info.parents > 1 ? '' : _cap(await git(['show', '--format=', '--no-color', c.hash], cwd: repo, lossy: true)),
       });
     }
     return _cache[c.hash] = CommitSummary(j!['summary'] as String, isMerge: j['is_merge'] == true, truncated: j['truncated'] == true);
@@ -81,6 +81,20 @@ class SummaryApi {
     }
     final j = await _call('POST', '/commit-message', {'diff': _cap(diff), 'hint': hint, 'recent': recent});
     return (title: j!['title'] as String, description: j['description'] as String);
+  }
+
+  /// Reporte de avance de un período a partir de los resúmenes por commit
+  /// ([items]: repo, autor, fecha y resumen). [team] = por persona.
+  Future<({String text, int cut})> report(String period, bool team, List<({String repo, Commit commit, String summary})> items) async {
+    final j = await _call('POST', '/report', {
+      'period': period,
+      'team': team,
+      'items': [
+        for (final i in items)
+          {'repo': i.repo, 'author': i.commit.author, 'date': i.commit.date.toUtc().toIso8601String(), 'summary': i.summary},
+      ],
+    });
+    return (text: j!['report'] as String, cut: j['cut'] as int);
   }
 
   /// Resúmenes guardados, más nuevos primero. [repo] vacío = todos los repos.

@@ -59,6 +59,7 @@ class _ShellState extends State<Shell> {
   BranchState? _branch;
   Foldout _foldout = Foldout.none;
   RepoTab _tab = RepoTab.changes;
+  String? _focusHash; // commit a abrir en el Historial (desde Resúmenes); se usa una vez
   int _tick = 0;
   bool _syncing = false;
   final _lastFetch = <String, DateTime>{};
@@ -1302,7 +1303,29 @@ class _ShellState extends State<Shell> {
     );
     final api = SummaryApi(s.apiUrl, s.apiToken);
     if (_tab == RepoTab.summaries && api.enabled) {
-      return SummariesPane(key: ValueKey(repo), repo: repo, api: api, repoId: repoId(_origins[repo], repo), layout: layout);
+      return SummariesPane(
+        key: ValueKey(repo),
+        repo: repo,
+        api: api,
+        repoId: repoId(_origins[repo], repo),
+        layout: layout,
+        repos: _profileRepos,
+        repoIdOf: (r) => repoId(_origins[r], r),
+        // Cómo firma el dueño en ese repo: el nombre y email de su cuenta y su
+        // usuario de GitHub (GitHub Desktop firma con el usuario como nombre).
+        authorsOf: (r) {
+          final a = accountFor(_origins[r], s.accounts, overrideId: s.repoAccounts[r]);
+          return a == null ? const [] : [a.gitName, a.gitEmail, ?a.githubUser];
+        },
+        onOpenCommit: (id, hash) {
+          final path = [repo, ..._repos].where((r) => repoId(_origins[r], r) == id).firstOrNull;
+          if (path == null) return _snack('Ese repo no está clonado en este equipo.');
+          // Pestaña y repo en el mismo frame: el Historial nuevo nace ya con el commit.
+          _focusHash = hash;
+          _tab = RepoTab.history;
+          path == repo ? setState(() {}) : _open(path);
+        },
+      );
     }
     return _tab == RepoTab.changes
         ? ChangesPane(
@@ -1333,6 +1356,12 @@ class _ShellState extends State<Shell> {
             editorCommand: s.editorCommand,
             summaries: api,
             onOpenSession: _openClaudeSession,
+            // ponytail: se consume al construir; el Historial solo lo lee al nacer.
+            focusHash: () {
+              final h = _focusHash;
+              _focusHash = null;
+              return h;
+            }(),
           );
   }
 

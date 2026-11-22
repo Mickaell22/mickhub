@@ -35,6 +35,19 @@ void main() {
     expect(fin.after, isNull); // "mucho después" queda fuera de los 7 días
     expect((await rel('mucho después')).before, isNull);
     expect((await rel('de luis')).before, isNull);
+
+    // Las releases tocan siempre lo mismo (pubspec): no se enlazan.
+    await commit('chore(release): 0.1.0', {'pubspec': '0.1.0'}, date: '2026-03-02T10:00:00Z');
+    await commit('chore(release): 0.1.1', {'pubspec': '0.1.1'}, date: '2026-03-03T10:00:00Z');
+    final rel1 = (await log(r)).first;
+    expect(rel1.summary, 'chore(release): 0.1.1');
+    expect((await relatedCommits(r, rel1, await commitFiles(r, rel1.hash))).before, isNull);
+    for (final m in ['chore(release): 0.1.9', 'build(release)!: 2.0', 'v1.2.3', '0.4', 'Release 2.0', 'bump version to 3']) {
+      expect(isRelease(m), isTrue, reason: m);
+    }
+    for (final m in ['feat(release-notes): agrega', 'fix: release del lock', 'releases: lista']) {
+      expect(isRelease(m), isFalse, reason: m);
+    }
     await Directory(r).delete(recursive: true);
   });
 }

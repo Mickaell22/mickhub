@@ -14,7 +14,10 @@ class GitException implements Exception {
 /// Corre el `git` instalado en el sistema y devuelve su salida estándar.
 /// Sin prompts de terminal: si falta una credencial, falla en vez de colgarse.
 /// [okCodes] son los códigos de salida que no cuentan como error (p. ej. `git
-/// diff --no-index` sale con 1 cuando hay diferencias).
+/// diff --no-index` sale con 1 cuando hay diferencias). [lossy] cambia los bytes
+/// que no son UTF-8 (archivos en Latin-1, comunes en Windows) por U+FFFD en vez
+/// de fallar: solo para texto que no vuelve a git (lo que se manda a la IA); un
+/// parche armado así y aplicado escribiría esos bytes cambiados.
 // Los mensajes de git van siempre en inglés (`LANGUAGE=C`): MickHub reconoce
 // errores por su texto (pull bloqueado, sesión vencida, conflictos) y con git en
 // español no los detectaba. Solo cambia los mensajes, no las rutas ni el contenido.
@@ -24,9 +27,10 @@ Future<String> git(
   String? stdin,
   Set<int> okCodes = const {0},
   Map<String, String> env = const {},
+  bool lossy = false,
 }) async {
   final p = await Process.start('git', args, workingDirectory: cwd, environment: {'GIT_TERMINAL_PROMPT': '0', 'LANGUAGE': 'C', ...env});
-  final out = p.stdout.transform(utf8.decoder).join();
+  final out = p.stdout.transform(Utf8Decoder(allowMalformed: lossy)).join();
   final err = p.stderr.transform(utf8.decoder).join();
   if (stdin != null) p.stdin.write(stdin);
   await p.stdin.close();
@@ -254,6 +258,78 @@ Future<List<Commit>> log(String repo, {int skip = 0}) async {
   }
 }
 
+/// Commits hechos entre [since] y [until] en todas las ramas (locales, remotas
+/// y tags), sin merges y sin repetir: un commit que llegó a varias ramas por
+/// PR sale una vez. Con [authors], solo los de alguno de esos nombres o emails
+/// (sin distinguir mayúsculas). `--all` no sirve: incluye los stashes y los
+/// respaldos de MickHub, y el commit del índice de un stash no es un merge.
+Future<List<Commit>> periodCommits(String repo, DateTime since, DateTime until, {List<String> authors = const []}) async {
+  try {
+    return parseLog(
+      await git([
+        'log',
+        '--branches',
+        '--remotes',
+        '--tags',
+        '--no-merges',
+        '--since=${since.toIso8601String()}',
+        '--until=${until.toIso8601String()}',
+        ..._authorArgs(authors),
+        _logFormat,
+      ], cwd: repo),
+    );
+  } on GitException {
+    return []; // repo sin commits
+  }
+}
+
+/// `--author` por cada identidad (cualquiera calza), sin distinguir mayúsculas.
+List<String> _authorArgs(List<String> authors) {
+  final who = authors.where((a) => a.trim().isNotEmpty).toSet();
+  return who.isEmpty ? const [] : ['-i', '--fixed-strings', for (final a in who) '--author=$a'];
+}
+
+/// Lo que trae la rama actual respecto de [base]: sus commits que [base] no
+/// tiene, sin merges. Lo que entró al ponerla al día con la base (por merge,
+/// rebase o fast-forward) ya está en [base] y no cuenta; lo ya llevado por un
+/// PR tampoco.
+Future<List<Commit>> branchCommits(String repo, String base, {List<String> authors = const []}) async {
+  try {
+    return parseLog(await git(['log', '$base..HEAD', '--no-merges', ..._authorArgs(authors), _logFormat], cwd: repo));
+  } on GitException {
+    return [];
+  }
+}
+
+/// Nombre de la rama actual (o "HEAD" si está suelta).
+Future<String> currentBranchName(String repo) async => (await git(['rev-parse', '--abbrev-ref', 'HEAD'], cwd: repo)).trim();
+
+/// Ramas contra las que comparar (las remotas, al día tras el fetch; sin
+/// remoto, las locales) y la principal del remoto, si se sabe.
+Future<(List<String>, String?)> baseBranches(String repo) async {
+  final remote = LineSplitter.split(await git(['for-each-ref', '--format=%(refname)', 'refs/remotes'], cwd: repo))
+      .where((r) => !r.endsWith('/HEAD'))
+      .map((r) => r.substring('refs/remotes/'.length))
+      .toList();
+  if (remote.isEmpty) return ((await allBranches(repo)).$1, null);
+  String? main;
+  try {
+    main = (await git(['symbolic-ref', '-q', '--short', 'refs/remotes/origin/HEAD'], cwd: repo)).trim();
+  } on GitException {
+    main = null; // el remoto no dijo cuál es su principal
+  }
+  return (remote, remote.contains(main) ? main : null);
+}
+
+/// Un commit por su hash (de cualquier rama), o null si este repo no lo tiene.
+Future<Commit?> commitByHash(String repo, String hash) async {
+  try {
+    return parseLog(await git(['log', '-n', '1', _logFormat, hash, '--'], cwd: repo)).firstOrNull;
+  } on GitException {
+    return null;
+  }
+}
+
 /// Busca en todo el historial de la rama: mensaje y autor (sin distinguir
 /// mayúsculas) y, si parece un hash, ese commit. Sin duplicados, más nuevos primero.
 Future<List<Commit>> searchLog(String repo, String query) async {
@@ -306,7 +382,7 @@ Future<List<FileChange>> commitFiles(String repo, String hash) async {
 }
 
 Future<String> commitFileDiff(String repo, String hash, FileChange f) =>
-    git(['show', '--format=', '-M', '--diff-merges=first-parent', hash, '--', if (f.oldPath != null) f.oldPath!, f.path], cwd: repo);
+    git(['show', '--format=', '-M', '--diff-merges=first-parent', hash, '--', if (f.oldPath != null) f.oldPath!, f.path], cwd: repo, lossy: true); // solo se muestra
 
 /// URL del remoto `origin`, o null si no tiene.
 Future<String?> originUrl(String repo) async {
@@ -587,7 +663,12 @@ Future<void> backupShelf(String repo, String hash) async {
 /// Respaldos de apartados, del más nuevo al más viejo: (hash, nombre, fecha).
 Future<List<(String, String, DateTime)>> shelfBackups(String repo) async => [
   for (final l in LineSplitter.split(
-    await git(['for-each-ref', '--sort=-refname', '--format=%(objectname)%1f%(subject)%1f%(creatordate:iso-strict)', backupPrefix], cwd: repo),
+    await git([
+      'for-each-ref',
+      '--sort=-refname',
+      '--format=%(objectname)%1f%(subject)%1f%(creatordate:iso-strict)',
+      backupPrefix,
+    ], cwd: repo),
   ))
     if (l.split('\x1f') case [final h, final s, final d]) (h, s.replaceFirst(RegExp(r'^(?:WIP )?[Oo]n [^:]+: '), ''), DateTime.parse(d)),
 ];
@@ -833,6 +914,12 @@ Future<void> shelveParts(String repo, String name, {required List<String> whole,
 /// Días que pueden separar dos partes de un mismo trabajo ("avance" y "final").
 const relatedDays = 7;
 
+/// Un commit de versión ("chore(release): 0.1.9", "v1.2.0", "Release 2.0"):
+/// todos tocan los mismos archivos (pubspec, changelog) y no son un trabajo
+/// partido, así que no se enlazan entre sí ni con otros.
+bool isRelease(String subject) =>
+    RegExp(r'^(\w+\(release\)!?:|release\b|bump version\b|v?\d+\.\d+(\.\d+)?\S*$)', caseSensitive: false).hasMatch(subject.trim());
+
 /// El commit anterior y el siguiente que parecen el mismo trabajo partido en
 /// varios commits: mismo autor, sin merges, a menos de [relatedDays] días y
 /// casi los mismos archivos (la mitad o más de todos los que tocan entre los dos). Busca solo
@@ -841,7 +928,7 @@ const relatedDays = 7;
 // archivos no se busca (línea de comandos larga y casi siempre es un refactor).
 Future<({Commit? before, Commit? after})> relatedCommits(String repo, Commit c, List<FileChange> files) async {
   final mine = {for (final f in files) f.path};
-  if (mine.isEmpty || mine.length > 50 || c.email.isEmpty) return (before: null, after: null);
+  if (mine.isEmpty || mine.length > 50 || c.email.isEmpty || isRelease(c.summary)) return (before: null, after: null);
   final common = [
     'log',
     '--no-merges',
@@ -863,7 +950,7 @@ Future<({Commit? before, Commit? after})> relatedCommits(String repo, Commit c, 
       final lines = rec.split('\n').where((l) => l.isNotEmpty).toList();
       if (lines.isEmpty) continue;
       final other = parseLog(lines.first).single;
-      if (other.hash == c.hash || other.date.difference(c.date).inDays.abs() >= relatedDays) continue;
+      if (other.hash == c.hash || isRelease(other.summary) || other.date.difference(c.date).inDays.abs() >= relatedDays) continue;
       final theirs = lines.skip(1).toSet();
       // Archivos en común sobre todos los que tocan entre los dos (Jaccard).
       if (theirs.intersection(mine).length >= 0.5 * theirs.union(mine).length) return other;

@@ -1809,9 +1809,14 @@ class HistoryPane extends StatefulWidget {
     this.editorCommand = '',
     this.summaries,
     this.onOpenSession,
+    this.focusHash,
   });
   final String repo;
   final int ahead;
+
+  /// Commit a abrir al entrar (elegido en la pestaña Resúmenes); puede no
+  /// estar en la rama actual.
+  final String? focusHash;
   final int tick;
   final Widget Function(Widget sidebar, Widget main) layout;
 
@@ -1881,8 +1886,15 @@ class _HistoryPaneState extends State<HistoryPane> {
       _hasMore = commits.length == logPage;
     });
     if (_query.trim().isNotEmpty) _search(_query);
-    final keep = commits.where((c) => c.hash == _selected?.hash).firstOrNull;
-    if (commits.isNotEmpty) _select(keep ?? commits.first);
+    final focus = _selected == null && widget.focusHash != null
+        ? commits.where((c) => c.hash == widget.focusHash).firstOrNull ?? await commitByHash(widget.repo, widget.focusHash!)
+        : null;
+    if (!mounted) return;
+    if (_selected == null && widget.focusHash != null && focus == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Ese commit no está en este repo todavía: trae los cambios (fetch).')));
+    }
+    final keep = focus ?? commits.where((c) => c.hash == _selected?.hash).firstOrNull;
+    if (commits.isNotEmpty || keep != null) _select(keep ?? commits.first);
   }
 
   /// Siguiente página, al llegar al final de la lista.

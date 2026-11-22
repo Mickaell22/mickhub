@@ -12,7 +12,20 @@ import 'theme.dart';
 /// Tabla de resúmenes guardados en la API: buscar qué se hizo, en este repo o
 /// en todos, por texto del resumen, mensaje, autor o hash.
 class SummariesPane extends StatefulWidget {
-  const SummariesPane({super.key, required this.repo, required this.api, required this.repoId, required this.layout});
+  const SummariesPane({
+    super.key,
+    required this.repo,
+    required this.api,
+    required this.repoId,
+    required this.layout,
+    this.repos = const [],
+    this.authorsOf,
+    this.repoIdOf,
+    this.onOpenCommit,
+  });
+
+  /// Abre el commit ([SummaryRow.repo], hash) en el Historial de su repo.
+  final void Function(String repoId, String hash)? onOpenCommit;
 
   /// Ruta del repo abierto (para leer sus commits al resumir en lote).
   final String repo;
@@ -21,6 +34,16 @@ class SummariesPane extends StatefulWidget {
   /// Identidad del repo abierto en la API ([repoId]).
   final String repoId;
   final Widget Function(Widget sidebar, Widget main) layout;
+
+  /// Repos del perfil, para el reporte de "todos mis repos".
+  final List<String> repos;
+
+  /// Nombres y emails con que firma el dueño en un repo (los de su cuenta),
+  /// para el reporte de "mis commits".
+  final List<String> Function(String repo)? authorsOf;
+
+  /// [repoId] de otro repo del perfil.
+  final String Function(String repo)? repoIdOf;
 
   @override
   State<SummariesPane> createState() => _SummariesPaneState();
@@ -37,6 +60,85 @@ class _SummariesPaneState extends State<SummariesPane> {
   int _request = 0; // descarta respuestas de búsquedas viejas
   ({int done, int total, int failed})? _batch; // null = no se está resumiendo en lote
   bool _cancel = false;
+  ({String title, String text, int commits, int cut})? _report;
+  String? _reportStatus; // null = no se está armando un reporte
+
+  /// Junta los commits del período, resume los que falten (lo ya resumido solo
+  /// se consulta) y le pide a la API el reporte. Un commit que no se pudo
+  /// resumir entra con su mensaje original.
+  Future<void> _runReport() async {
+    final cfg = await showDialog<ReportConfig>(context: context, builder: (_) => _ReportDialog(repo: widget.repo));
+    if (cfg == null || !mounted) return;
+    final (since, until) = cfg.period.range(DateTime.now());
+    final base = cfg.base;
+    final repos = base == null && cfg.allRepos && widget.repos.isNotEmpty ? widget.repos : [widget.repo];
+    final branch = base == null ? '' : await currentBranchName(widget.repo);
+    // Lo que va a la IA como período y lo que se muestra.
+    final period = base == null ? cfg.period.label.toLowerCase() : 'lo que trae la rama $branch respecto de $base';
+    setState(() => _reportStatus = 'Buscando commits…');
+    try {
+      final found = <({String repo, Commit commit})>[];
+      for (final r in repos) {
+        final authors = cfg.team ? const <String>[] : (widget.authorsOf?.call(r) ?? const <String>[]);
+        if (!cfg.team && authors.isEmpty) continue; // repo sin cuenta: no se sabe cuáles son "míos"
+        final commits = base == null ? await periodCommits(r, since, until, authors: authors) : await branchCommits(r, base, authors: authors);
+        found.addAll([for (final c in commits) (repo: r, commit: c)]);
+      }
+      if (!mounted) return;
+      if (found.isEmpty) {
+        setState(() => _reportStatus = null);
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(
+          SnackBar(
+            content: Text(
+              base == null
+                  ? 'No hay commits ${cfg.period.label.toLowerCase()}${cfg.team ? '' : ' tuyos'}.'
+                  : 'La rama $branch no trae commits${cfg.team ? '' : ' tuyos'} que $base no tenga.',
+            ),
+          ),
+        );
+        return;
+      }
+      final items = <({String repo, Commit commit, String summary})>[];
+      var next = 0;
+      Future<void> worker() async {
+        while (mounted && next < found.length) {
+          final f = found[next++];
+          String text;
+          try {
+            text = (await widget.api.summary(f.repo, f.commit)).text;
+          } on SummaryException {
+            text = f.commit.summary; // sin IA para este: va su mensaje
+          }
+          items.add((repo: widget.repoIdOf?.call(f.repo) ?? widget.repoId, commit: f.commit, summary: text));
+          if (mounted) setState(() => _reportStatus = 'Resumiendo commits: ${items.length} de ${found.length}');
+        }
+      }
+
+      await Future.wait([for (var i = 0; i < _parallel; i++) worker()]);
+      if (!mounted) return;
+      setState(() => _reportStatus = 'Escribiendo el reporte…');
+      final r = await widget.api.report(period, cfg.team, items);
+      if (!mounted) return;
+      setState(() {
+        _report = (
+          title:
+              base != null
+              ? 'Lo que trae $branch · respecto de $base'
+              : '${cfg.team ? 'Avance del equipo' : 'Mi avance'} · ${cfg.period.label}${repos.length > 1 ? ' · ${repos.length} repos' : ''}',
+          text: r.text,
+          commits: found.length,
+          cut: r.cut,
+        );
+        _reportStatus = null;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _reportStatus = null);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('No se pudo armar el reporte: $e')));
+    }
+  }
 
   static const _page = 50;
 
@@ -152,7 +254,10 @@ class _SummariesPaneState extends State<SummariesPane> {
           return GhRow(
             height: Gh.commitRowHeight,
             selected: r.hash == _selected?.hash,
-            onTap: () => setState(() => _selected = r),
+            onTap: () => setState(() {
+              _selected = r;
+              _report = null;
+            }),
             child: Row(
               children: [
                 Avatar(email: r.email, name: r.author, size: 24),
@@ -243,13 +348,32 @@ class _SummariesPaneState extends State<SummariesPane> {
             ),
           },
         ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(Gh.sp, 0, Gh.sp, Gh.sp),
+          child: _reportStatus == null
+              ? OutlinedButton.icon(
+                  onPressed: _batch == null ? _runReport : null,
+                  icon: const Icon(Icons.summarize_outlined, size: 16),
+                  label: const Text('Reporte del período…'),
+                )
+              : Row(
+                  children: [
+                    const SizedBox.square(dimension: 14, child: CircularProgressIndicator(strokeWidth: 2)),
+                    const SizedBox(width: Gh.sp),
+                    Expanded(child: Text(_reportStatus!, style: small)),
+                  ],
+                ),
+        ),
         const Divider(height: 1, color: Gh.border),
         Expanded(child: list),
       ],
     );
 
     final r = _selected;
-    final main = r == null
+    final rep = _report;
+    final main = rep != null
+        ? _reportView(rep, small)
+        : r == null
         ? emptyState('Resúmenes con IA', 'Elige un resumen de la lista.')
         : ListView(
             padding: const EdgeInsets.all(Gh.sp * 2),
@@ -269,6 +393,12 @@ class _SummariesPaneState extends State<SummariesPane> {
                     icon: const Icon(Icons.content_copy, size: 14),
                     label: Text(r.shortHash),
                   ),
+                  if (widget.onOpenCommit != null)
+                    TextButton.icon(
+                      onPressed: () => widget.onOpenCommit!(r.repo, r.hash),
+                      icon: const Icon(Icons.history, size: 14),
+                      label: const Text('Ver en el Historial'),
+                    ),
                 ],
               ),
               const SizedBox(height: Gh.sp * 2),
@@ -289,6 +419,175 @@ class _SummariesPaneState extends State<SummariesPane> {
           );
     return widget.layout(sidebar, main);
   }
+
+  /// El reporte: "## " son encabezados (una persona en el del equipo), el resto
+  /// texto. Se puede copiar tal cual para pegarlo en un chat del trabajo.
+  Widget _reportView(({String title, String text, int commits, int cut}) rep, TextStyle? small) => ListView(
+    padding: const EdgeInsets.all(Gh.sp * 2),
+    children: [
+      Row(
+        children: [
+          Expanded(
+            child: Text(rep.title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+          ),
+          TextButton.icon(
+            onPressed: () => Clipboard.setData(ClipboardData(text: rep.text)),
+            icon: const Icon(Icons.content_copy, size: 14),
+            label: const Text('Copiar'),
+          ),
+          IconButton(
+            tooltip: 'Cerrar el reporte',
+            iconSize: 16,
+            onPressed: () => setState(() => _report = null),
+            icon: const Icon(Icons.close),
+          ),
+        ],
+      ),
+      Text('${rep.commits} commits sin merges${rep.cut > 0 ? ' · ${rep.cut} no entraron por tamaño' : ''}', style: small),
+      const SizedBox(height: Gh.sp * 2),
+      for (final line in rep.text.split('\n'))
+        line.startsWith('## ')
+            ? Padding(
+                padding: const EdgeInsets.only(top: Gh.sp * 1.5, bottom: 4),
+                child: SelectableText(line.substring(3), style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+              )
+            : SelectableText(line, style: const TextStyle(height: 1.5)),
+    ],
+  );
+}
+
+/// Períodos del reporte. Las semanas empiezan el lunes.
+enum ReportPeriod {
+  today('Hoy'),
+  yesterday('Ayer'),
+  thisWeek('Esta semana'),
+  lastWeek('La semana pasada'),
+  last30('Los últimos 30 días');
+
+  const ReportPeriod(this.label);
+  final String label;
+
+  /// Desde (incluido) y hasta (excluido), en hora local.
+  (DateTime, DateTime) range(DateTime now) {
+    final day = DateTime(now.year, now.month, now.day);
+    // DateTime(...) y no subtract(Duration): con cambio de horario un día no dura 24 h.
+    DateTime back(int days) => DateTime(day.year, day.month, day.day - days);
+    final monday = back(day.weekday - DateTime.monday);
+    return switch (this) {
+      ReportPeriod.today => (day, now),
+      ReportPeriod.yesterday => (back(1), day),
+      ReportPeriod.thisWeek => (monday, now),
+      ReportPeriod.lastWeek => (DateTime(monday.year, monday.month, monday.day - 7), monday),
+      ReportPeriod.last30 => (back(30), now),
+    };
+  }
+}
+
+/// [base] != null: "lo que trae la rama" actual respecto de esa rama (solo este
+/// repo, sin período).
+typedef ReportConfig = ({ReportPeriod period, bool team, bool allRepos, String? base});
+
+class _ReportDialog extends StatefulWidget {
+  const _ReportDialog({required this.repo});
+  final String repo;
+
+  @override
+  State<_ReportDialog> createState() => _ReportDialogState();
+}
+
+class _ReportDialogState extends State<_ReportDialog> {
+  var _period = ReportPeriod.thisWeek;
+  var _team = false, _allRepos = true, _branch = false;
+  List<String> _bases = [];
+  String? _base;
+
+  @override
+  void initState() {
+    super.initState();
+    baseBranches(widget.repo).then((b) {
+      if (mounted) {
+        setState(() {
+          _bases = b.$1;
+          _base = b.$2 ?? b.$1.firstOrNull;
+        });
+      }
+    }, onError: (_) {}); // sin commits: no hay ramas que comparar
+  }
+
+  Widget _choice<T>(String label, T value, List<(T, String)> options, ValueChanged<T> onChanged) => Padding(
+    padding: const EdgeInsets.only(bottom: Gh.sp * 1.5),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: const TextStyle(color: Gh.textSecondary)),
+        const SizedBox(height: 4),
+        SegmentedButton<T>(
+          showSelectedIcon: false,
+          style: const ButtonStyle(visualDensity: VisualDensity.compact),
+          segments: [for (final (v, l) in options) ButtonSegment(value: v, label: Text(l))],
+          selected: {value},
+          onSelectionChanged: (v) => setState(() => onChanged(v.first)),
+        ),
+      ],
+    ),
+  );
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Row(
+      children: [
+        Icon(Icons.summarize_outlined, size: 18),
+        SizedBox(width: 8),
+        Text('Reporte del período', style: TextStyle(fontSize: 14)),
+      ],
+    ),
+    content: SizedBox(
+      width: 520,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _choice('Qué', _branch, const [(false, 'Un período'), (true, 'Lo que trae esta rama')], (v) => _branch = v),
+          if (!_branch)
+            _choice('Período', _period, [for (final p in ReportPeriod.values) (p, p.label)], (v) => _period = v)
+          else
+            Padding(
+              padding: const EdgeInsets.only(bottom: Gh.sp * 1.5),
+              child: Row(
+                children: [
+                  const Text('Respecto de', style: TextStyle(color: Gh.textSecondary)),
+                  const SizedBox(width: Gh.sp),
+                  DropdownButton<String>(
+                    value: _base,
+                    isDense: true,
+                    hint: const Text('Sin otras ramas'),
+                    items: [for (final b in _bases) DropdownMenuItem(value: b, child: Text(b))],
+                    onChanged: (v) => setState(() => _base = v),
+                  ),
+                ],
+              ),
+            ),
+          _choice('De quién', _team, const [(false, 'Mis commits'), (true, 'Del equipo')], (v) => _team = v),
+          if (!_branch)
+            _choice('Dónde', _allRepos, const [(false, 'Este repo'), (true, 'Todos los repos del perfil')], (v) => _allRepos = v),
+          Text(
+            'Usa los resúmenes por commit (los que falten se hacen ahora, una sola vez) y no cuenta los merges. '
+            '${_branch ? 'Solo los commits de la rama que la base todavía no tiene: lo que entró al ponerla al día no cuenta.' : 'Tus commits salen de todas las ramas, también de desarrollo.'}',
+            style: const TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
+          ),
+        ],
+      ),
+    ),
+    actions: [
+      TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancelar')),
+      FilledButton(
+        onPressed: _branch && _base == null
+            ? null
+            : () => Navigator.pop(context, (period: _period, team: _team, allRepos: _allRepos, base: _branch ? _base : null)),
+        child: const Text('Armar'),
+      ),
+    ],
+  );
 }
 
 /// Pregunta qué se hizo antes de que la IA escriba el mensaje del commit.

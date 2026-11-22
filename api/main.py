@@ -35,6 +35,7 @@ DEEPSEEK_MAX_TOKENS = int(os.environ.get("DEEPSEEK_MAX_TOKENS", "8192"))
 DEEPSEEK_TIMEOUT = float(os.environ.get("DEEPSEEK_TIMEOUT", "120"))
 # Lo que entra del diff a la IA; el resto se corta para no quemar tokens.
 MAX_DIFF_CHARS = int(os.environ.get("MAX_DIFF_CHARS", "60000"))
+REPORT_MAX_CHARS = int(os.environ.get("REPORT_MAX_CHARS", "120000"))  # resúmenes que entran en un reporte
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS summaries (
@@ -151,6 +152,59 @@ def commit_message(d: Draft):
     text, tin, tout = _ask(DRAFT_PROMPT, f"Mensajes recientes del repo:\n{recent}\n\n{hint}Diff:\n{d.diff[:MAX_DIFF_CHARS]}{note}")
     title, _, body = text.strip().strip("`").strip().partition("\n")
     return {"title": title.strip(), "description": body.strip(), "tokens_in": tin, "tokens_out": tout}
+
+
+class ReportItem(BaseModel):
+    repo: str
+    author: str
+    date: datetime
+    summary: str
+
+
+class Report(BaseModel):
+    period: str  # "hoy", "del 10 al 16 de noviembre"... tal cual lo muestra la app
+    team: bool  # True = de todos, por persona; False = de una sola persona
+    items: list[ReportItem]
+
+
+REPORT_PROMPT = (
+    "Te paso los resúmenes de los commits de un período o de una rama (uno por commit, ya escritos por ti a partir "
+    "del diff). Escribe en español un reporte de avance para leer en un minuto. Formato: una primera "
+    "línea con el resumen general (del período o de lo que trae la rama, según se indique); luego, {group}, viñetas con '- ' que junten lo que es "
+    "de la misma funcionalidad (no un commit por viñeta) y digan qué quedó hecho, en qué repo si hay "
+    "varios. Describe, no evalúes: nada de opinar sobre la calidad ni de inventar lo que no está en "
+    "los resúmenes. Sin saludo ni cierre. Usa '## ' solo para los encabezados de sección."
+)
+
+
+@app.post("/report", dependencies=[Depends(auth)])
+def report(r: Report):
+    """Junta resúmenes por hash ya hechos en un reporte del período; no lee diffs ni guarda nada."""
+    if not r.items:
+        raise HTTPException(400, "No hay commits en el período")
+    # ponytail: todo en una sola pregunta. Si no entra en REPORT_MAX_CHARS, cada commit va solo con la
+    # primera línea de su resumen; si ni así, se cortan los más viejos y se avisa. Ordenar por autor y cortar
+    # dejaba fuera a los últimos del abecedario. Upgrade: resumir por repo o por persona y luego juntar.
+    items = sorted(r.items, key=lambda i: (i.author.lower(), i.date))
+    line = lambda i, s: f"[{i.date:%Y-%m-%d}] {i.author} · {i.repo}: {s}"
+    lines = [line(i, i.summary.strip()) for i in items]
+    if sum(map(len, lines)) > REPORT_MAX_CHARS:
+        lines = [line(i, (i.summary.strip().splitlines() or [""])[0]) for i in items]
+    keep, used = set(), 0
+    for n in sorted(range(len(items)), key=lambda n: items[n].date, reverse=True):
+        if used + len(lines[n]) > REPORT_MAX_CHARS:
+            break
+        keep.add(n)
+        used += len(lines[n])
+    lines = [l for n, l in enumerate(lines) if n in keep]
+    cut = len(items) - len(lines)
+    note = f"\n\n[Faltan los {cut} commits más viejos por tamaño; resume con lo visible.]" if cut else ""
+    group = "una sección '## <persona>' por cada autor" if r.team else "agrupado por repo si hay varios"
+    text, tin, tout = _ask(
+        REPORT_PROMPT.format(group=group),
+        f"Período: {r.period}\nCommits: {len(r.items)}\n\n" + "\n\n".join(lines) + note,
+    )
+    return {"report": text, "commits": len(r.items), "cut": cut, "tokens_in": tin, "tokens_out": tout}
 
 
 @app.get("/health")
