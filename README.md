@@ -116,6 +116,28 @@ Atajos para todo, fetch en segundo plano, papelera para lo descartado, abrir el 
 - **Una escena distinta para cada día del año**: 366 combinaciones de terreno, lugar, hora y clima, sin repetir terreno dos días seguidos y con la luna en su fase real.
 - **Mascotas en pixel art** que caminan por la barra, duermen de noche, festejan cuando commiteas y se ponen gorro en las fiestas.
 
+La misma ventana con nueve de las paletas, cada una con su escena y una mascota distinta en la barra:
+
+<table>
+<tr>
+<td width="33%" align="center"><img src="./docs/screenshots/app_tema_desktop.png" alt="MickHub con la paleta GitHub Desktop (de fábrica)"/><br/><sub><b>GitHub Desktop (de fábrica)</b> · gato</sub></td>
+<td width="33%" align="center"><img src="./docs/screenshots/app_tema_oceano.png" alt="MickHub con la paleta Océano"/><br/><sub><b>Océano</b> · pato</sub></td>
+<td width="33%" align="center"><img src="./docs/screenshots/app_tema_arcade.png" alt="MickHub con la paleta Arcade"/><br/><sub><b>Arcade</b> · robot</sub></td>
+</tr>
+<tr>
+<td align="center"><img src="./docs/screenshots/app_tema_halloween.png" alt="MickHub con la paleta Halloween"/><br/><sub><b>Halloween</b> · dragón</sub></td>
+<td align="center"><img src="./docs/screenshots/app_tema_navidad.png" alt="MickHub con la paleta Navidad"/><br/><sub><b>Navidad</b> · perro</sub></td>
+<td align="center"><img src="./docs/screenshots/app_tema_aventura.png" alt="MickHub con la paleta Aventura de 16 bits"/><br/><sub><b>Aventura de 16 bits</b> · zorro</sub></td>
+</tr>
+<tr>
+<td align="center"><img src="./docs/screenshots/app_tema_espacio.png" alt="MickHub con la paleta Espacio"/><br/><sub><b>Espacio</b> · pingüino</sub></td>
+<td align="center"><img src="./docs/screenshots/app_tema_muertos.png" alt="MickHub con la paleta Día de Muertos"/><br/><sub><b>Día de Muertos</b> · capibara</sub></td>
+<td align="center"><img src="./docs/screenshots/app_tema_cobre.png" alt="MickHub con la paleta Cobre"/><br/><sub><b>Cobre</b> · conejo</sub></td>
+</tr>
+</table>
+
+Y algunas de las escenas, en grande:
+
 <table>
 <tr>
 <td width="33%" align="center"><img src="./docs/screenshots/dia_faro.png" alt="Faro en la costa bajo la luna"/><br/><sub>29 de mayo: faro en la costa bajo la luna, con nieve</sub></td>
