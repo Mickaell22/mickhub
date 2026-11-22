@@ -438,7 +438,7 @@ List<String> hunkKeys(String diff) {
   StringBuffer? cur;
   void close() {
     if (cur == null) return;
-    final h = sha1.convert(utf8.encode(cur.toString())).toString().substring(0, 16);
+    final h = sha1.convert(encodeGit(cur.toString())).toString().substring(0, 16);
     final n = seen[h] = (seen[h] ?? 0) + 1;
     keys.add(n == 1 ? h : '$h#$n');
   }

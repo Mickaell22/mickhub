@@ -14,10 +14,8 @@ class GitException implements Exception {
 /// Corre el `git` instalado en el sistema y devuelve su salida estándar.
 /// Sin prompts de terminal: si falta una credencial, falla en vez de colgarse.
 /// [okCodes] son los códigos de salida que no cuentan como error (p. ej. `git
-/// diff --no-index` sale con 1 cuando hay diferencias). [lossy] cambia los bytes
-/// que no son UTF-8 (archivos en Latin-1, comunes en Windows) por U+FFFD en vez
-/// de fallar: solo para texto que no vuelve a git (lo que se manda a la IA); un
-/// parche armado así y aplicado escribiría esos bytes cambiados.
+/// diff --no-index` sale con 1 cuando hay diferencias). La salida se decodifica
+/// con [decodeGit] (no se pierde ningún byte) y [stdin] vuelve con [encodeGit].
 // Los mensajes de git van siempre en inglés (`LANGUAGE=C`): MickHub reconoce
 // errores por su texto (pull bloqueado, sesión vencida, conflictos) y con git en
 // español no los detectaba. Solo cambia los mensajes, no las rutas ni el contenido.
@@ -27,16 +25,96 @@ Future<String> git(
   String? stdin,
   Set<int> okCodes = const {0},
   Map<String, String> env = const {},
-  bool lossy = false,
 }) async {
   final p = await Process.start('git', args, workingDirectory: cwd, environment: {'GIT_TERMINAL_PROMPT': '0', 'LANGUAGE': 'C', ...env});
-  final out = p.stdout.transform(Utf8Decoder(allowMalformed: lossy)).join();
-  final err = p.stderr.transform(utf8.decoder).join();
-  if (stdin != null) p.stdin.write(stdin);
+  final out = p.stdout.fold(BytesBuilder(copy: false), (b, d) => b..add(d)).then((b) => decodeGit(b.takeBytes()));
+  final err = p.stderr.transform(const Utf8Decoder(allowMalformed: true)).join();
+  if (stdin != null) p.stdin.add(encodeGit(stdin));
   await p.stdin.close();
   if (!okCodes.contains(await p.exitCode)) throw GitException(args, (await err).trim());
   return out;
 }
+
+// Archivos que no son UTF-8 (Latin-1 / Windows-1252, comunes en los backends en
+// Windows): antes `git()` fallaba con FormatException y Cambios no mostraba el
+// diff. Se hace como el "surrogateescape" de Python: cada byte inválido queda
+// como U+DC80+byte, un carácter que UTF-8 válido nunca produce, y [encodeGit] lo
+// devuelve al mismo byte. Así un parche armado con ese texto (commit parcial,
+// descartar o apartar bloques) escribe exactamente los bytes originales. Solo
+// para mostrar o mandar a la IA se pasa por [readable].
+final _escaped = RegExp(r'(?<![\uD800-\uDBFF])[\uDC80-\uDCFF]');
+
+/// Bytes de git a texto, sin perder ninguno (ver arriba).
+String decodeGit(List<int> bytes) {
+  try {
+    return utf8.decode(bytes);
+  } on FormatException {
+    // sigue abajo, byte por byte
+  }
+  final out = StringBuffer();
+  var i = 0;
+  while (i < bytes.length) {
+    final c = bytes[i];
+    if (c < 0x80) {
+      out.writeCharCode(c);
+      i++;
+      continue;
+    }
+    final (n, first, min) = c >= 0xC2 && c <= 0xDF
+        ? (1, c & 0x1F, 0x80)
+        : c >= 0xE0 && c <= 0xEF
+        ? (2, c & 0x0F, 0x800)
+        : c >= 0xF0 && c <= 0xF4
+        ? (3, c & 0x07, 0x10000)
+        : (0, 0, 0);
+    var cp = first;
+    var ok = n > 0;
+    for (var j = 1; ok && j <= n; j++) {
+      if (i + j >= bytes.length || bytes[i + j] & 0xC0 != 0x80) {
+        ok = false;
+      } else {
+        cp = cp << 6 | bytes[i + j] & 0x3F;
+      }
+    }
+    if (ok && cp >= min && cp <= 0x10FFFF && (cp < 0xD800 || cp > 0xDFFF)) {
+      out.writeCharCode(cp);
+      i += n + 1;
+    } else {
+      out.writeCharCode(0xDC00 + c);
+      i++;
+    }
+  }
+  return out.toString();
+}
+
+/// Inversa de [decodeGit]: los bytes escapados vuelven a ser los originales.
+List<int> encodeGit(String s) {
+  if (!_escaped.hasMatch(s)) return utf8.encode(s);
+  final out = BytesBuilder(copy: false);
+  for (final r in s.runes) {
+    if (r >= 0xDC80 && r <= 0xDCFF) {
+      out.addByte(r - 0xDC00);
+    } else {
+      out.add(utf8.encode(String.fromCharCode(r)));
+    }
+  }
+  return out.takeBytes();
+}
+
+/// Para mostrar o mandar a la IA: los bytes escapados como Windows-1252 (que
+/// incluye Latin-1), así "Ã±"/"�" se leen "ñ". No volver a mandar esto a git.
+String readable(String s) => s.contains(_escaped)
+    ? s.replaceAllMapped(_escaped, (m) {
+        final b = m[0]!.codeUnitAt(0) - 0xDC00;
+        return String.fromCharCode(b >= 0xA0 ? b : _cp1252[b - 0x80]);
+      })
+    : s;
+
+// Bytes 0x80-0x9F de Windows-1252; 0xFFFD donde no define nada.
+const _cp1252 = [
+  0x20AC, 0xFFFD, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0xFFFD, 0x017D, 0xFFFD, //
+  0xFFFD, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0xFFFD, 0x017E, 0x0178,
+];
 
 /// Contenido de [path] en la versión [rev] (`HEAD`, un hash, `<hash>^`...), en
 /// bytes crudos: [git] decodifica como texto y rompería una imagen. Null si en
@@ -382,7 +460,7 @@ Future<List<FileChange>> commitFiles(String repo, String hash) async {
 }
 
 Future<String> commitFileDiff(String repo, String hash, FileChange f) =>
-    git(['show', '--format=', '-M', '--diff-merges=first-parent', hash, '--', if (f.oldPath != null) f.oldPath!, f.path], cwd: repo, lossy: true); // solo se muestra
+    git(['show', '--format=', '-M', '--diff-merges=first-parent', hash, '--', if (f.oldPath != null) f.oldPath!, f.path], cwd: repo);
 
 /// URL del remoto `origin`, o null si no tiene.
 Future<String?> originUrl(String repo) async {
@@ -863,7 +941,12 @@ String? selectHunks(String diff, Set<int> hunks) {
     if (hunks.contains(idx)) out.add(l);
   }
   if (out.length == first) return null;
-  return '${out.join('\n').trimRight()}\n';
+  // Solo las líneas vacías del final: trimRight() también se comía el \r de la
+  // última línea en archivos CRLF y el parche dejaba de calzar.
+  while (out.last.isEmpty) {
+    out.removeLast();
+  }
+  return '${out.join('\n')}\n';
 }
 
 /// Aparta solo algunos bloques de un archivo versionado: el apartado guarda esos
@@ -888,7 +971,7 @@ Future<void> shelveParts(String repo, String name, {required List<String> whole,
       if (patch == null) continue;
       final file = File('$repo/$path');
       final patchFile = File('${tmp.path}/${i++}.patch');
-      await patchFile.writeAsString(patch);
+      await patchFile.writeAsBytes(encodeGit(patch));
       originals[path] = await file.readAsBytes();
       await git(['apply', '-R', patchFile.path], cwd: repo); // archivo = todo menos los bloques
       rests[path] = await file.readAsBytes();

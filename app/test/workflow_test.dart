@@ -10,6 +10,10 @@ Future<String> tempRepo() async {
   addTearDown(() => dir.delete(recursive: true));
   final r = dir.path;
   await git(['init', '-q', '-b', 'Mmoran'], cwd: r);
+  // Sin mantenimiento automático: con más de ~100 objetos sueltos git empaqueta en
+  // segundo plano y el test de 200 commits leía a la vez ("Could not read <objeto>").
+  await git(['config', 'maintenance.auto', 'false'], cwd: r);
+  await git(['config', 'gc.auto', '0'], cwd: r);
   File('$r/a.txt').writeAsStringSync('base\n');
   await git(['add', '.'], cwd: r);
   await git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'init'], cwd: r);

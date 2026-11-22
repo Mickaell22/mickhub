@@ -2,6 +2,7 @@ import 'dart:isolate';
 
 import 'package:flutter/material.dart';
 
+import 'git.dart';
 import 'syntax.dart';
 import 'theme.dart';
 
@@ -19,7 +20,7 @@ List<DiffLine>? parseDiff(String diff) {
   final lines = <DiffLine>[];
   var oldNo = 0, newNo = 0;
   var inHunk = false;
-  for (final l in diff.split('\n')) {
+  for (final l in readable(diff).split('\n')) {
     if (!inHunk && l.startsWith('Binary files')) return null;
     final h = RegExp(r'^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@').firstMatch(l);
     if (h != null) {

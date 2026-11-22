@@ -63,7 +63,7 @@ class SummaryApi {
         'message': info.message,
         'parents': info.parents,
         // Los merges no van a la IA: no hace falta leer su diff.
-        'diff': info.parents > 1 ? '' : _cap(await git(['show', '--format=', '--no-color', c.hash], cwd: repo, lossy: true)),
+        'diff': info.parents > 1 ? '' : _cap(readable(await git(['show', '--format=', '--no-color', c.hash], cwd: repo))),
       });
     }
     return _cache[c.hash] = CommitSummary(j!['summary'] as String, isMerge: j['is_merge'] == true, truncated: j['truncated'] == true);
