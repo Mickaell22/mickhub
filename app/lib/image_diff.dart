@@ -64,7 +64,7 @@ class _ImageDiffState extends State<ImageDiff> {
           padding: const EdgeInsets.all(Gh.sp),
           child: bytes == null
               ? Center(
-                  child: Text(title == 'Antes' ? 'No existía' : 'Se borró', style: const TextStyle(color: Gh.textSecondary)),
+                  child: Text(title == 'Antes' ? 'No existía' : 'Se borró', style: TextStyle(color: Gh.textSecondary)),
                 )
               : FutureBuilder(
                   future: bytes,
@@ -79,7 +79,7 @@ class _ImageDiffState extends State<ImageDiff> {
                             b,
                             fit: BoxFit.contain,
                             filterQuality: FilterQuality.medium,
-                            errorBuilder: (_, _, _) => const Center(
+                            errorBuilder: (_, _, _) => Center(
                               child: Text('No se pudo mostrar la imagen', style: TextStyle(color: Gh.textSecondary)),
                             ),
                           ),
@@ -87,11 +87,11 @@ class _ImageDiffState extends State<ImageDiff> {
                         const SizedBox(height: 6),
                         Text(
                           _size(b.length),
-                          style: const TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
+                          style: TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
                         ),
                       ],
                     ),
-                    _ => const Center(
+                    _ => Center(
                       child: Text('No se pudo leer', style: TextStyle(color: Gh.textSecondary)),
                     ),
                   },

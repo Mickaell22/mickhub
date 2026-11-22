@@ -47,7 +47,7 @@ Future<void> showAccountsDialog(BuildContext context, Settings s, Map<String, Se
           content: SizedBox(
             width: 600,
             child: s.accounts.isEmpty
-                ? const Padding(
+                ? Padding(
                     padding: EdgeInsets.symmetric(vertical: 24),
                     child: Text(
                       'Agrega tus cuentas (la personal y la del trabajo) para ver si su sesión está activa y para que cada '
@@ -61,7 +61,7 @@ Future<void> showAccountsDialog(BuildContext context, Settings s, Map<String, Se
                       for (final a in s.accounts)
                         Container(
                           padding: const EdgeInsets.symmetric(vertical: 8),
-                          decoration: const BoxDecoration(border: Border(bottom: Gh.divider)),
+                          decoration: BoxDecoration(border: Border(bottom: Gh.divider)),
                           child: Row(
                             children: [
                               accountAvatar(a, size: 36),
@@ -74,7 +74,7 @@ Future<void> showAccountsDialog(BuildContext context, Settings s, Map<String, Se
                                     Text(
                                       '${a.places.isEmpty ? 'Sin GitHub ni Azure' : a.places}'
                                       '${a.hasIdentity ? ' · firma como ${a.gitName} <${a.gitEmail}>' : ' · sin nombre/email para commits'}',
-                                      style: const TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
+                                      style: TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
                                     ),
                                     Row(
                                       children: [

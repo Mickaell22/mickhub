@@ -63,6 +63,27 @@ class Settings extends ChangeNotifier {
   String apiUrl = '';
   String apiToken = '';
 
+  /// Personalización (`look.dart`, `decor.dart`). [look]: paleta elegida
+  /// (nombre de [Look]); [rotation]: 'fija', 'dia' (una distinta cada día) o
+  /// 'abrir' (una al azar cada vez que se abre).
+  String look = 'desktop';
+  String rotation = 'fija';
+
+  /// Fechas especiales (Halloween, Navidad...) activas por defecto.
+  bool seasonal = true;
+
+  /// Temporada saltada a mano (`seasonKey`): eligió otra paleta durante ella.
+  String skippedSeason = '';
+
+  /// Cumpleaños ('MM-DD', vacío = sin cumpleaños): ese día, paleta de fiesta.
+  String birthday = '';
+
+  /// Escenas y mascota. [scene]: 'auto' (la de la paleta), 'ninguna' o el
+  /// nombre de una [Scene]. [pet]: 'ninguna', 'azar' o el nombre de una mascota.
+  bool decor = true;
+  String scene = 'auto';
+  String pet = 'gato';
+
   File? _file;
 
   /// Ruta del JSON de ajustes. Se puede editar desde fuera (por ejemplo Claude
@@ -101,6 +122,14 @@ class Settings extends ChangeNotifier {
     repoAccounts = Map<String, String>.from(j['repoAccounts'] ?? {});
     collapsedGroups = List<String>.from(j['collapsedGroups'] ?? []);
     groupFilter = List<String>.from(j['groupFilter'] ?? []);
+    look = j['look'] ?? 'desktop';
+    rotation = j['rotation'] ?? 'fija';
+    seasonal = j['seasonal'] ?? true;
+    skippedSeason = j['skippedSeason'] ?? '';
+    birthday = j['birthday'] ?? '';
+    decor = j['decor'] ?? true;
+    scene = j['scene'] ?? 'auto';
+    pet = j['pet'] ?? 'gato';
   }
 
   Future<void> update(void Function(Settings) change) async {
@@ -126,6 +155,14 @@ class Settings extends ChangeNotifier {
         'repoAccounts': repoAccounts,
         'collapsedGroups': collapsedGroups,
         'groupFilter': groupFilter,
+        'look': look,
+        'rotation': rotation,
+        'seasonal': seasonal,
+        'skippedSeason': skippedSeason,
+        'birthday': birthday,
+        'decor': decor,
+        'scene': scene,
+        'pet': pet,
       }),
     );
   }

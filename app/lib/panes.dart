@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'accounts.dart';
 import 'change_groups.dart';
 import 'change_groups_ui.dart';
+import 'decor.dart';
 import 'avatar.dart';
 import 'summaries.dart';
 import 'summaries_pane.dart';
@@ -44,7 +45,7 @@ class SplitLayout extends StatelessWidget {
           behavior: HitTestBehavior.opaque,
           onHorizontalDragUpdate: (d) => onResize(d.delta.dx),
           onHorizontalDragEnd: (_) => onResizeEnd(),
-          child: const SizedBox(width: 5, child: VerticalDivider(width: 1, thickness: 1, color: Gh.border)),
+          child: SizedBox(width: 5, child: VerticalDivider(width: 1, thickness: 1, color: Gh.border)),
         ),
       ),
       Expanded(child: main),
@@ -80,7 +81,7 @@ class _GhRowState extends State<GhRow> {
         padding: const EdgeInsets.symmetric(horizontal: Gh.sp),
         decoration: BoxDecoration(
           color: widget.selected ? Gh.selected : (_hover ? Gh.hover : null),
-          border: const Border(bottom: Gh.divider),
+          border: Border(bottom: Gh.divider),
         ),
         child: widget.child,
       ),
@@ -88,7 +89,16 @@ class _GhRowState extends State<GhRow> {
   );
 }
 
-Widget emptyState(String title, [String? detail, List<Widget> actions = const []]) => Center(
+/// Pantalla vacía. [scene]: con el fondo dibujado de la paleta (solo en los
+/// paneles grandes; en una columna angosta estorba).
+Widget emptyState(String title, [String? detail, List<Widget> actions = const [], bool scene = false]) => scene
+    ? Stack(
+        children: [
+          const Positioned.fill(child: SceneBackdrop()),
+          emptyState(title, detail, actions),
+        ],
+      )
+    : Center(
   child: Padding(
     padding: const EdgeInsets.all(Gh.sp * 3),
     child: Column(
@@ -100,7 +110,7 @@ Widget emptyState(String title, [String? detail, List<Widget> actions = const []
           Text(
             detail,
             textAlign: TextAlign.center,
-            style: const TextStyle(color: Gh.textSecondary),
+            style: TextStyle(color: Gh.textSecondary),
           ),
         ],
         if (actions.isNotEmpty) ...[
@@ -116,7 +126,7 @@ Widget emptyState(String title, [String? detail, List<Widget> actions = const []
 Widget fileHeader(FileChange f) => Container(
   height: Gh.tabBarHeight,
   padding: const EdgeInsets.symmetric(horizontal: Gh.sp),
-  decoration: const BoxDecoration(
+  decoration: BoxDecoration(
     color: Gh.boxAlt,
     border: Border(bottom: Gh.divider),
   ),
@@ -756,20 +766,20 @@ class _ChangesPaneState extends State<ChangesPane> {
   Widget _hunkBar(FileChange f, String diff) => Container(
     height: Gh.rowHeight + 6,
     padding: const EdgeInsets.symmetric(horizontal: Gh.sp),
-    decoration: const BoxDecoration(
+    decoration: BoxDecoration(
       color: Gh.box,
       border: Border(bottom: Gh.divider),
     ),
     child: Row(
       children: [
-        const Icon(Icons.inventory_2_outlined, size: 14, color: Gh.textSecondary),
+        Icon(Icons.inventory_2_outlined, size: 14, color: Gh.textSecondary),
         const SizedBox(width: 6),
         Expanded(
           child: Text(
             _hunks.isEmpty
                 ? 'Marca bloques para apartarlos o moverlos a otro grupo'
                 : '${_hunks.length} ${_hunks.length == 1 ? 'bloque marcado' : 'bloques marcados'}',
-            style: const TextStyle(color: Gh.textSecondary),
+            style: TextStyle(color: Gh.textSecondary),
           ),
         ),
         if (_hunks.isNotEmpty)
@@ -838,7 +848,7 @@ class _ChangesPaneState extends State<ChangesPane> {
       padding: const EdgeInsets.all(Gh.sp),
       decoration: BoxDecoration(
         color: Gh.conflicted.withValues(alpha: 0.15),
-        border: const Border(bottom: Gh.divider),
+        border: Border(bottom: Gh.divider),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -858,7 +868,7 @@ class _ChangesPaneState extends State<ChangesPane> {
             ],
           ),
           if (stash)
-            const Padding(
+            Padding(
               padding: EdgeInsets.only(top: 4),
               child: Text(
                 'Tus cambios sin commitear chocaron con lo que trajo el pull. Elige con qué quedarte en cada archivo; '
@@ -918,7 +928,7 @@ class _ChangesPaneState extends State<ChangesPane> {
         fileHeader(f),
         Container(
           padding: const EdgeInsets.all(Gh.sp),
-          decoration: const BoxDecoration(border: Border(bottom: Gh.divider)),
+          decoration: BoxDecoration(border: Border(bottom: Gh.divider)),
           child: Wrap(
             spacing: 6,
             runSpacing: 6,
@@ -929,7 +939,7 @@ class _ChangesPaneState extends State<ChangesPane> {
                 _merge == MergeState.stash
                     ? 'Verde: lo que llegó del remoto · Azul: tus cambios.  '
                     : 'Verde: tu versión · Azul: la del remoto.  ',
-                style: const TextStyle(color: Gh.textSecondary),
+                style: TextStyle(color: Gh.textSecondary),
               ),
               OutlinedButton.icon(
                 onPressed: () => _guard(() => resolveWith(widget.repo, f.path, mine: true, state: _merge)),
@@ -952,7 +962,7 @@ class _ChangesPaneState extends State<ChangesPane> {
                 label: const Text('Marcar como resuelto'),
               ),
               if (rebase)
-                const Text('(en un rebase, "tu versión" es tu commit que se está reaplicando)', style: TextStyle(color: Gh.textSecondary)),
+                Text('(en un rebase, "tu versión" es tu commit que se está reaplicando)', style: TextStyle(color: Gh.textSecondary)),
             ],
           ),
         ),
@@ -1036,7 +1046,7 @@ class _ChangesPaneState extends State<ChangesPane> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text(
+              Text(
                 'Se guardan con un nombre y desaparecen de Cambios; lo demás se queda. '
                 'Puedes cambiar de rama, hacer otro commit y recuperarlos después desde "Apartados". '
                 'Para que no se suban nunca pero sigan en tu copia, usa Proteger, no Apartar.',
@@ -1192,7 +1202,7 @@ class _ChangesPaneState extends State<ChangesPane> {
         child: Container(
           height: Gh.rowHeight,
           padding: const EdgeInsets.symmetric(horizontal: Gh.sp),
-          decoration: const BoxDecoration(
+          decoration: BoxDecoration(
             color: Gh.boxAlt,
             border: Border(top: Gh.divider, bottom: Gh.divider),
           ),
@@ -1233,7 +1243,7 @@ class _ChangesPaneState extends State<ChangesPane> {
               child: Text(
                 p.path,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: Gh.textSecondary),
+                style: TextStyle(color: Gh.textSecondary),
               ),
             ),
           ),
@@ -1329,7 +1339,7 @@ class _ChangesPaneState extends State<ChangesPane> {
                             timeAgo(sh.date),
                           ].join(' · '),
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
+                          style: TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
                         ),
                       ],
                     ),
@@ -1508,17 +1518,17 @@ class _ChangesPaneState extends State<ChangesPane> {
                   message: n == 1 ? '1 commit de este grupo sin subir' : '$n commits de este grupo sin subir',
                   child: Row(
                     children: [
-                      const Icon(Icons.arrow_upward, size: 12, color: Gh.textSecondary),
+                      Icon(Icons.arrow_upward, size: 12, color: Gh.textSecondary),
                       Text(
                         '$n',
-                        style: const TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
+                        style: TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
                       ),
                     ],
                   ),
                 ),
               Text(
                 '  ${rows.length}',
-                style: const TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
+                style: TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
               ),
             ],
           ),
@@ -1550,7 +1560,7 @@ class _ChangesPaneState extends State<ChangesPane> {
             ),
           ),
           if (split)
-            const Padding(
+            Padding(
               padding: EdgeInsets.only(left: 4),
               child: Icon(Icons.call_split, size: 12, color: Gh.textSecondary),
             ),
@@ -1582,7 +1592,7 @@ class _ChangesPaneState extends State<ChangesPane> {
         Container(
           height: Gh.rowHeight,
           padding: const EdgeInsets.symmetric(horizontal: Gh.sp / 2),
-          decoration: const BoxDecoration(
+          decoration: BoxDecoration(
             color: Gh.boxAlt,
             border: Border(bottom: Gh.divider),
           ),
@@ -1643,8 +1653,8 @@ class _ChangesPaneState extends State<ChangesPane> {
           icon: const Icon(Icons.code, size: 16),
           label: const Text('Abrir en el editor'),
         ),
-      ]),
-      (_, null, _) => emptyState('Selecciona un archivo', 'Elige un archivo de la lista para ver sus cambios.'),
+      ], true),
+      (_, null, _) => emptyState('Selecciona un archivo', 'Elige un archivo de la lista para ver sus cambios.', const [], true),
       (_, final f?, _) when f.status == FileStatus.conflicted => _conflictView(f),
       // Imágenes: antes (último commit) y después (lo que hay en disco).
       (_, final f?, _) when isImagePath(f.path) => Column(
@@ -1725,7 +1735,7 @@ class _ChangesPaneState extends State<ChangesPane> {
   Widget _commitBoxBody(int checked, bool can) {
     return Container(
       padding: const EdgeInsets.all(Gh.sp),
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         color: Gh.boxAlt,
         border: Border(top: Gh.divider),
       ),
@@ -1930,7 +1940,7 @@ class _HistoryPaneState extends State<HistoryPane> {
   /// en cada grupo.
   Widget _fileList(List<FileChange> files) {
     if (files.isEmpty) {
-      return const Padding(
+      return Padding(
         padding: EdgeInsets.all(Gh.sp),
         child: Text('Ningún archivo coincide.', style: TextStyle(color: Gh.textSecondary)),
       );
@@ -1980,7 +1990,7 @@ class _HistoryPaneState extends State<HistoryPane> {
                   ),
                   Text(
                     '$n',
-                    style: const TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
+                    style: TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
                   ),
                 ],
               ),
@@ -2037,7 +2047,7 @@ class _HistoryPaneState extends State<HistoryPane> {
             TextSpan(text: '$label '),
             TextSpan(
               text: '${c.shortHash} · ${c.summary}',
-              style: const TextStyle(color: Gh.link),
+              style: TextStyle(color: Gh.link),
             ),
             TextSpan(text: ' (${timeAgo(c.date)})'),
           ],
@@ -2070,14 +2080,14 @@ class _HistoryPaneState extends State<HistoryPane> {
       width: double.infinity,
       constraints: const BoxConstraints(maxHeight: 180),
       padding: const EdgeInsets.fromLTRB(Gh.sp, 6, Gh.sp, 6),
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         color: Gh.box,
         border: Border(bottom: Gh.divider),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Padding(
+          Padding(
             padding: EdgeInsets.only(top: 1, right: 6),
             child: Icon(Icons.auto_awesome_outlined, size: 14, color: Gh.textSecondary),
           ),
@@ -2251,7 +2261,7 @@ class _HistoryPaneState extends State<HistoryPane> {
                         child: Tooltip(message: 'Grupo de cambios', child: groupChip(g)),
                       ),
                     if (unpushed.contains(c.hash))
-                      const Tooltip(
+                      Tooltip(
                         message: 'Sin subir',
                         child: Icon(Icons.arrow_upward, size: 14, color: Gh.textSecondary),
                       ),
@@ -2272,20 +2282,20 @@ class _HistoryPaneState extends State<HistoryPane> {
             onChanged: _onQuery,
           ),
         ),
-        const Divider(height: 1, color: Gh.border),
+        Divider(height: 1, color: Gh.border),
         Expanded(child: list),
       ],
     );
 
     final c = _selected;
     final main = c == null
-        ? emptyState('Sin commits')
+        ? emptyState('Sin commits', null, const [], true)
         : Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Container(
                 padding: const EdgeInsets.all(Gh.sp),
-                decoration: const BoxDecoration(
+                decoration: BoxDecoration(
                   color: Gh.boxAlt,
                   border: Border(bottom: Gh.divider),
                 ),
@@ -2356,7 +2366,7 @@ class _HistoryPaneState extends State<HistoryPane> {
                                   padding: const EdgeInsets.fromLTRB(8, 0, 8, 4),
                                   child: Text(
                                     '${shown.length} de ${_files.length}',
-                                    style: const TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
+                                    style: TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
                                   ),
                                 ),
                               Expanded(child: _fileList(shown)),
@@ -2365,7 +2375,7 @@ class _HistoryPaneState extends State<HistoryPane> {
                         },
                       ),
                     ),
-                    const VerticalDivider(width: 1, thickness: 1, color: Gh.border),
+                    VerticalDivider(width: 1, thickness: 1, color: Gh.border),
                     Expanded(
                       child: switch ((_file, _diff)) {
                         // Imágenes: antes (primer padre) y después (el commit).
@@ -2419,13 +2429,13 @@ Widget groupChip(String name) => Container(
   child: Row(
     mainAxisSize: MainAxisSize.min,
     children: [
-      const Icon(Icons.folder_special_outlined, size: 11, color: Gh.link),
+      Icon(Icons.folder_special_outlined, size: 11, color: Gh.link),
       const SizedBox(width: 3),
       Flexible(
         child: Text(
           name,
           overflow: TextOverflow.ellipsis,
-          style: const TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
+          style: TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
         ),
       ),
     ],

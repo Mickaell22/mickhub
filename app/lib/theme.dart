@@ -4,19 +4,55 @@ import 'git.dart';
 
 /// Colores y medidas del tema oscuro de GitHub Desktop 3.4 (sacados de sus SCSS,
 /// `themes/_dark.scss` y `_variables.scss`; las funciones darken/lighten de Sass
-/// ya están resueltas a hex).
+/// ya están resueltas a hex). Los de superficie y el acento salen de la paleta
+/// activa ([apply], `look.dart`); la de fábrica es exactamente la de Desktop. Los
+/// de estado (agregado, borrado...) son significado, no decoración: fijos.
 abstract final class Gh {
-  static const bg = Color(0xff24292e); // gray-900
-  static const box = Color(0xff1d2125); // darken(gray-900, 3%): toolbar, gutter
-  static const boxAlt = Color(0xff2b3137); // lighten(gray-900, 3%): headers, caja de commit
-  static const border = Color(0xff141414);
-  static const hover = Color(0xff2f363d); // gray-800
-  static const selected = Color(0xff444d56); // gray-700
-  static const blue = Color(0xff0366d6);
-  static const link = Color(0xff2e8fff);
-  static const text = Color(0xfff6f8fa); // gray-100
-  static const textSecondary = Color(0xff959da5); // gray-400
-  static const textMuted = Color(0xff535a61);
+  static Color bg = const Color(0xff24292e); // gray-900
+  static Color box = const Color(0xff1d2125); // darken(gray-900, 3%): toolbar, gutter
+  static Color boxAlt = const Color(0xff2b3137); // lighten(gray-900, 3%): headers, caja de commit
+  static Color border = const Color(0xff141414);
+  static Color hover = const Color(0xff2f363d); // gray-800
+  static Color selected = const Color(0xff444d56); // gray-700
+  static Color blue = const Color(0xff0366d6);
+  static Color link = const Color(0xff2e8fff);
+  static Color text = const Color(0xfff6f8fa); // gray-100
+  static Color textSecondary = const Color(0xff959da5); // gray-400
+  static Color textMuted = const Color(0xff535a61);
+  static Color diffHunkGutter = const Color(0xff171a1d);
+
+  /// Los colores puestos ahora (para dibujar algo con otra paleta y volver).
+  static GhColors current() => GhColors(
+    bg: bg,
+    box: box,
+    boxAlt: boxAlt,
+    border: border,
+    hover: hover,
+    selected: selected,
+    accent: blue,
+    link: link,
+    text: text,
+    textSecondary: textSecondary,
+    textMuted: textMuted,
+    gutter: diffHunkGutter,
+  );
+
+  /// Pone los colores de una paleta. Quien la cambia reconstruye todo el árbol
+  /// (`rebuildAll`): nada guarda estos colores en un `const`.
+  static void apply(GhColors c) {
+    bg = c.bg;
+    box = c.box;
+    boxAlt = c.boxAlt;
+    border = c.border;
+    hover = c.hover;
+    selected = c.selected;
+    blue = c.accent;
+    link = c.link;
+    text = c.text;
+    textSecondary = c.textSecondary;
+    textMuted = c.textMuted;
+    diffHunkGutter = c.gutter;
+  }
 
   static const added = Color(0xff28a745);
   static const deleted = Color(0xffd73a49);
@@ -26,7 +62,6 @@ abstract final class Gh {
 
   static const diffAdd = Color(0xff113a1b);
   static const diffDelete = Color(0xff450c0f);
-  static const diffHunkGutter = Color(0xff171a1d);
 
   static const toolbarHeight = 50.0;
   static const tabBarHeight = 29.0;
@@ -38,7 +73,74 @@ abstract final class Gh {
   static const fontSizeSm = 11.0;
 
   static const mono = TextStyle(fontFamily: 'monospace', fontSize: fontSize, height: 1.5);
-  static const divider = BorderSide(color: border);
+  static BorderSide get divider => BorderSide(color: border);
+}
+
+/// Los colores que cambian con la paleta.
+class GhColors {
+  const GhColors({
+    required this.bg,
+    required this.box,
+    required this.boxAlt,
+    required this.border,
+    required this.hover,
+    required this.selected,
+    required this.accent,
+    required this.link,
+    required this.text,
+    required this.textSecondary,
+    required this.textMuted,
+    required this.gutter,
+  });
+  final Color bg, box, boxAlt, border, hover, selected, accent, link, text, textSecondary, textMuted, gutter;
+
+  /// GitHub Desktop 3.4, tema oscuro: la base que no se toca.
+  static const desktop = GhColors(
+    bg: Color(0xff24292e),
+    box: Color(0xff1d2125),
+    boxAlt: Color(0xff2b3137),
+    border: Color(0xff141414),
+    hover: Color(0xff2f363d),
+    selected: Color(0xff444d56),
+    accent: Color(0xff0366d6),
+    link: Color(0xff2e8fff),
+    text: Color(0xfff6f8fa),
+    textSecondary: Color(0xff959da5),
+    textMuted: Color(0xff535a61),
+    gutter: Color(0xff171a1d),
+  );
+
+  /// Una paleta oscura derivada de un tono ([hue], [sat]) y un acento, con las
+  /// mismas luminosidades que Desktop para que todas se sientan de la familia.
+  factory GhColors.derive(double hue, double sat, Color accent, {Color? link}) {
+    Color n(double l, [double s = 1]) => HSLColor.fromAHSL(1, hue, (sat * s).clamp(0, 1), l).toColor();
+    final a = HSLColor.fromColor(accent);
+    return GhColors(
+      bg: n(.16),
+      box: n(.13),
+      boxAlt: n(.19),
+      border: n(.075, .6),
+      hover: n(.21),
+      selected: n(.29),
+      accent: accent,
+      link: link ?? a.withLightness((a.lightness + .18).clamp(.55, .72)).toColor(),
+      text: n(.97, .4),
+      textSecondary: n(.62, .35),
+      textMuted: n(.36, .3),
+      gutter: n(.105),
+    );
+  }
+}
+
+/// Reconstruye todo debajo de [context] sin perder estado (como un hot reload):
+/// al cambiar de paleta los colores de [Gh] cambian por debajo.
+void rebuildAll(BuildContext context) {
+  void mark(Element e) {
+    e.markNeedsBuild();
+    e.visitChildren(mark);
+  }
+
+  (context as Element).visitChildren(mark);
 }
 
 ThemeData ghTheme() {
@@ -51,11 +153,11 @@ ThemeData ghTheme() {
     textTheme: base.textTheme
         .apply(bodyColor: Gh.text, displayColor: Gh.text)
         .copyWith(
-          bodyMedium: const TextStyle(fontSize: Gh.fontSize, color: Gh.text),
-          bodySmall: const TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
+          bodyMedium: TextStyle(fontSize: Gh.fontSize, color: Gh.text),
+          bodySmall: TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
           labelLarge: const TextStyle(fontSize: Gh.fontSize, fontWeight: FontWeight.w600),
         ),
-    inputDecorationTheme: const InputDecorationTheme(
+    inputDecorationTheme: InputDecorationTheme(
       isDense: true,
       filled: true,
       fillColor: Gh.box,
@@ -87,7 +189,7 @@ ThemeData ghTheme() {
       style: OutlinedButton.styleFrom(
         backgroundColor: Gh.hover,
         foregroundColor: Gh.text,
-        side: const BorderSide(color: Gh.border),
+        side: BorderSide(color: Gh.border),
         textStyle: const TextStyle(fontSize: Gh.fontSize),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(Gh.radius)),
       ),
@@ -106,7 +208,7 @@ ThemeData ghTheme() {
       color: Gh.boxAlt,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(Gh.radius), side: Gh.divider),
     ),
-    tooltipTheme: const TooltipThemeData(
+    tooltipTheme: TooltipThemeData(
       textStyle: TextStyle(fontSize: Gh.fontSizeSm, color: Gh.text),
       decoration: BoxDecoration(color: Gh.box),
     ),

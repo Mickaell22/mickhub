@@ -129,7 +129,7 @@ class _CloneBodyState extends State<_CloneBody> {
       children: [
         Container(
           padding: const EdgeInsets.all(Gh.sp * 1.5),
-          decoration: const BoxDecoration(border: Border(bottom: Gh.divider)),
+          decoration: BoxDecoration(border: Border(bottom: Gh.divider)),
           child: Row(
             children: [
               const Text('Clonar un repositorio', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
@@ -138,7 +138,7 @@ class _CloneBodyState extends State<_CloneBody> {
                 DropdownButton<(Account, Target)>(
                   value: _source,
                   isDense: true,
-                  style: const TextStyle(fontSize: Gh.fontSize, color: Gh.text),
+                  style: TextStyle(fontSize: Gh.fontSize, color: Gh.text),
                   items: [
                     for (final src in _sources)
                       DropdownMenuItem(
@@ -169,7 +169,7 @@ class _CloneBodyState extends State<_CloneBody> {
         Expanded(child: _list()),
         Container(
           padding: const EdgeInsets.all(Gh.sp),
-          decoration: const BoxDecoration(
+          decoration: BoxDecoration(
             color: Gh.boxAlt,
             border: Border(top: Gh.divider),
           ),
@@ -242,7 +242,7 @@ class _CloneBodyState extends State<_CloneBody> {
               DropdownButton<String?>(
                 value: _owner,
                 isDense: true,
-                style: const TextStyle(fontSize: Gh.fontSize, color: Gh.text),
+                style: TextStyle(fontSize: Gh.fontSize, color: Gh.text),
                 items: [
                   const DropdownMenuItem(value: null, child: Text('Todos los dueños')),
                   for (final o in owners) DropdownMenuItem(value: o, child: Text(o)),
@@ -253,7 +253,7 @@ class _CloneBodyState extends State<_CloneBody> {
               DropdownButton<CloneFilter>(
                 value: _filter,
                 isDense: true,
-                style: const TextStyle(fontSize: Gh.fontSize, color: Gh.text),
+                style: TextStyle(fontSize: Gh.fontSize, color: Gh.text),
                 items: const [
                   DropdownMenuItem(value: CloneFilter.all, child: Text('Todos')),
                   DropdownMenuItem(value: CloneFilter.cloned, child: Text('Clonados')),
@@ -273,7 +273,7 @@ class _CloneBodyState extends State<_CloneBody> {
         ),
         Expanded(
           child: shown.isEmpty
-              ? const Center(
+              ? Center(
                   child: Text('Ningún repo coincide con los filtros.', style: TextStyle(color: Gh.textSecondary)),
                 )
               : ListView.builder(itemCount: shown.length, itemExtent: 44, itemBuilder: (_, i) => _tile(shown[i])),
@@ -287,12 +287,12 @@ class _CloneBodyState extends State<_CloneBody> {
     if (_cloning == r.fullName) {
       trailing = const SizedBox.square(dimension: 16, child: CircularProgressIndicator(strokeWidth: 2));
     } else if (_isCloned(r)) {
-      trailing = const Text('Clonado', style: TextStyle(color: Gh.textSecondary));
+      trailing = Text('Clonado', style: TextStyle(color: Gh.textSecondary));
     } else {
       trailing = TextButton(onPressed: _cloning == null ? () => _clone(r) : null, child: const Text('Clonar'));
     }
     return Container(
-      decoration: const BoxDecoration(border: Border(bottom: Gh.divider)),
+      decoration: BoxDecoration(border: Border(bottom: Gh.divider)),
       padding: const EdgeInsets.symmetric(horizontal: Gh.sp),
       child: Row(
         children: [

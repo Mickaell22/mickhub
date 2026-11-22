@@ -185,7 +185,7 @@ Future<String?> showPublishDialog(BuildContext context, Settings s, String repo)
                     title: const Text('Privado'),
                   )
                 else if (projects == null && error == null)
-                  const Padding(
+                  Padding(
                     padding: EdgeInsets.all(8),
                     child: Text('Cargando proyectos…', style: TextStyle(color: Gh.textSecondary)),
                   )

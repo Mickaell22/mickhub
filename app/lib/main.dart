@@ -9,8 +9,10 @@ import 'accounts.dart';
 import 'accounts_ui.dart';
 import 'avatar.dart';
 import 'clone_dialog.dart';
+import 'decor.dart';
 import 'git.dart';
 import 'panes.dart';
+import 'personalize.dart';
 import 'repo_dialogs.dart';
 import 'settings.dart';
 import 'summaries.dart';
@@ -24,13 +26,46 @@ Future<void> main() async {
   final settings = Settings();
   await settings.load();
   avatarDir = Directory('${settings.dataDir.path}${Platform.pathSeparator}fotos');
-  runApp(
-    MaterialApp(
-      title: 'MickHub',
-      debugShowCheckedModeBanner: false,
-      theme: ghTheme(),
-      home: Shell(settings: settings),
-    ),
+  applyLook(settings); // la paleta antes del primer cuadro
+  runApp(_App(settings: settings));
+}
+
+/// Raíz: al cambiar la paleta rehace el tema y reconstruye todo el árbol
+/// (los colores de [Gh] cambian por debajo, ver `rebuildAll`).
+class _App extends StatefulWidget {
+  const _App({required this.settings});
+  final Settings settings;
+
+  @override
+  State<_App> createState() => _AppState();
+}
+
+class _AppState extends State<_App> {
+  @override
+  void initState() {
+    super.initState();
+    lookState.addListener(_restyle);
+  }
+
+  @override
+  void dispose() {
+    lookState.removeListener(_restyle);
+    super.dispose();
+  }
+
+  void _restyle() {
+    setState(() {});
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) rebuildAll(context);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) => MaterialApp(
+    title: 'MickHub',
+    debugShowCheckedModeBanner: false,
+    theme: ghTheme(),
+    home: Shell(settings: widget.settings),
   );
 }
 
@@ -78,6 +113,9 @@ class _ShellState extends State<Shell> {
     // Como Desktop: al volver a la ventana se refresca el estado del repo.
     // Al volver a la ventana: refrescar el repo y revisar si alguna sesión venció.
     _lifecycle = AppLifecycleListener(
+      // Ventana oculta o minimizada: la decoración se detiene.
+      onHide: () => decorClock.visible = false,
+      onShow: () => decorClock.visible = true,
       onResume: () {
         _refresh();
         _checkSessions();
@@ -98,14 +136,25 @@ class _ShellState extends State<Shell> {
       _reloadDebounce?.cancel();
       _reloadDebounce = Timer(const Duration(milliseconds: 300), () async {
         await s.load();
+        _restyle(); // load() no avisa a los oyentes: la paleta editada desde fuera
         if (mounted) await _loadRepos(reopen: false);
       });
     });
     _loadRepos();
+    // La paleta sigue a los ajustes (Personalización o el JSON editado desde
+    // fuera) y a la fecha (cambio de día, temporada que empieza).
+    s.addListener(_restyle);
+    _lookTimer = Timer.periodic(const Duration(minutes: 5), (_) => _restyle());
   }
+
+  Timer? _lookTimer;
+
+  void _restyle() => applyLook(s);
 
   @override
   void dispose() {
+    s.removeListener(_restyle);
+    _lookTimer?.cancel();
     _lifecycle.dispose();
     _settingsWatch?.cancel();
     _updateTimer?.cancel();
@@ -324,6 +373,7 @@ class _ShellState extends State<Shell> {
           cwd: repo,
           env: env,
         );
+        petCheer.value++;
       } else if (_origins[repo] == null) {
         if (mounted) setState(() => _syncing = false);
         await _publish();
@@ -334,6 +384,7 @@ class _ShellState extends State<Shell> {
         await pull(repo, identity: _account?.identityArgs ?? const [], env: env); // un pull puede crear un merge
       } else if (b.ahead > 0) {
         await git(['push'], cwd: repo, env: env);
+        petCheer.value++;
       } else {
         await git(['fetch', '--prune'], cwd: repo, env: env);
         _lastFetch[repo] = DateTime.now();
@@ -405,7 +456,7 @@ class _ShellState extends State<Shell> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Tienes la $appVersion.', style: const TextStyle(color: Gh.textSecondary)),
+                Text('Tienes la $appVersion.', style: TextStyle(color: Gh.textSecondary)),
                 const SizedBox(height: Gh.sp),
                 ConstrainedBox(
                   constraints: const BoxConstraints(maxHeight: 260),
@@ -525,6 +576,7 @@ class _ShellState extends State<Shell> {
         const SingleActivator(LogicalKeyboardKey.digit1, control: true): () => setState(() => _tab = RepoTab.changes),
         const SingleActivator(LogicalKeyboardKey.digit2, control: true): () => setState(() => _tab = RepoTab.history),
         const SingleActivator(LogicalKeyboardKey.digit3, control: true): () => setState(() => _tab = RepoTab.summaries),
+        const SingleActivator(LogicalKeyboardKey.comma, control: true): () => showPersonalize(context, s),
         const SingleActivator(LogicalKeyboardKey.keyP, control: true, shift: true): () => _syncing ? null : _sync(),
         const SingleActivator(LogicalKeyboardKey.keyF, control: true, shift: true): () => _openFolder(repo),
         const SingleActivator(LogicalKeyboardKey.keyA, control: true, shift: true): () => _openEditor(repo),
@@ -577,7 +629,7 @@ class _ShellState extends State<Shell> {
       actions: [
         Text(
           'MickHub ${appVersion.isEmpty ? '(compilación local)' : appVersion}',
-          style: const TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
+          style: TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
         ),
         FilledButton(onPressed: () => Navigator.pop(c), child: const Text('Cerrar')),
       ],
@@ -651,7 +703,7 @@ class _ShellState extends State<Shell> {
     };
     return Container(
       height: Gh.toolbarHeight,
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         color: Gh.box,
         border: Border(bottom: Gh.divider),
       ),
@@ -686,7 +738,8 @@ class _ShellState extends State<Shell> {
             onTap: _repo == null || b == null || _syncing ? null : _sync,
             onSecondary: _repo == null || b == null || _syncing ? null : _syncMenu,
           ),
-          const Spacer(),
+          // El hueco libre de la barra: escena en tira y la mascota.
+          const Expanded(child: ToolbarDecor()),
           if (_update != null)
             Padding(
               padding: const EdgeInsets.only(right: 6),
@@ -697,6 +750,12 @@ class _ShellState extends State<Shell> {
                 label: Text('Actualizar a ${_update!.tag}'),
               ),
             ),
+          IconButton(
+            tooltip: 'Personalización (Ctrl+,)',
+            iconSize: 18,
+            onPressed: () => showPersonalize(context, s),
+            icon: const Icon(Icons.palette_outlined),
+          ),
           IconButton(
             tooltip: 'Atajos de teclado (Ctrl+/)',
             iconSize: 18,
@@ -840,7 +899,7 @@ class _ShellState extends State<Shell> {
         content: SizedBox(
           width: 380,
           child: existing.isEmpty
-              ? const Text('Todavía no hay grupos. Crea el primero.', style: TextStyle(color: Gh.textSecondary))
+              ? Text('Todavía no hay grupos. Crea el primero.', style: TextStyle(color: Gh.textSecondary))
               : Wrap(
                   spacing: 6,
                   runSpacing: 6,
@@ -948,7 +1007,7 @@ class _ShellState extends State<Shell> {
                         SizedBox(
                           height: 220,
                           child: shown.isEmpty
-                              ? const Center(
+                              ? Center(
                                   child: Text('Ningún repo coincide.', style: TextStyle(color: Gh.textSecondary)),
                                 )
                               : ListView(
@@ -1157,7 +1216,7 @@ class _ShellState extends State<Shell> {
                       ? 'Solo existe en tu máquina hasta que la publiques.'
                       : 'Los ${changes.length} archivos con cambios sin commitear viajan a la rama nueva. '
                             'Si alguno no debe ir (una implementación a medias), apártalo antes desde Cambios.',
-                  style: const TextStyle(color: Gh.textSecondary),
+                  style: TextStyle(color: Gh.textSecondary),
                 ),
               ],
             ),
@@ -1210,7 +1269,7 @@ class _ShellState extends State<Shell> {
               width: 520,
               height: 360,
               child: entries.isEmpty
-                  ? const Center(
+                  ? Center(
                       child: Text('Vacía. Lo que descartes en Cambios aparece aquí.', style: TextStyle(color: Gh.textSecondary)),
                     )
                   : ListView(
@@ -1220,7 +1279,7 @@ class _ShellState extends State<Shell> {
                             height: 40,
                             child: Row(
                               children: [
-                                const Icon(Icons.insert_drive_file_outlined, size: 16, color: Gh.textSecondary),
+                                Icon(Icons.insert_drive_file_outlined, size: 16, color: Gh.textSecondary),
                                 const SizedBox(width: Gh.sp),
                                 Expanded(
                                   child: Column(
@@ -1230,7 +1289,7 @@ class _ShellState extends State<Shell> {
                                       Text(e.path, overflow: TextOverflow.ellipsis),
                                       Text(
                                         'Descartado ${timeAgo(e.deletedAt)}',
-                                        style: const TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
+                                        style: TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
                                       ),
                                     ],
                                   ),
@@ -1275,8 +1334,11 @@ class _ShellState extends State<Shell> {
   Widget _body() {
     final repo = _repo;
     if (repo == null) {
-      return Center(
-        child: Column(
+      return Stack(
+        children: [
+          const Positioned.fill(child: SceneBackdrop()),
+          Center(
+            child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             const Text('No hay ningún repositorio abierto', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600)),
@@ -1284,8 +1346,10 @@ class _ShellState extends State<Shell> {
             FilledButton.icon(onPressed: _clone, icon: const Icon(Icons.download, size: 16), label: const Text('Clonar un repositorio')),
             const SizedBox(height: Gh.sp),
             TextButton(onPressed: _addLocal, child: const Text('Agregar un repositorio local')),
-          ],
-        ),
+              ],
+            ),
+          ),
+        ],
       );
     }
     Widget layout(Widget sidebar, Widget main) => SplitLayout(
@@ -1334,7 +1398,10 @@ class _ShellState extends State<Shell> {
             branch: _branch?.name ?? '',
             tick: _tick,
             layout: layout,
-            onCommitted: _refresh,
+            onCommitted: () {
+              petCheer.value++; // la mascota festeja
+              _refresh();
+            },
             onOpenFolder: _openFolder,
             onOpenEditor: () => _openEditor(repo),
             onFocusFile: (f) => _editorFocus = f,
@@ -1375,7 +1442,7 @@ class _ShellState extends State<Shell> {
           decoration: BoxDecoration(
             border: Border(
               right: t != RepoTab.summaries ? Gh.divider : BorderSide.none,
-              bottom: _tab == t ? const BorderSide(color: Gh.blue, width: 3) : Gh.divider,
+              bottom: _tab == t ? BorderSide(color: Gh.blue, width: 3) : Gh.divider,
             ),
           ),
           child: Text(label, style: TextStyle(fontWeight: _tab == t ? FontWeight.w600 : FontWeight.normal)),
@@ -1407,7 +1474,7 @@ class _ShellState extends State<Shell> {
         Icon(icon, size: 12, color: Gh.textSecondary),
         Text(
           '$n',
-          style: const TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
+          style: TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
         ),
       ],
     );
@@ -1423,7 +1490,7 @@ class _ShellState extends State<Shell> {
         children: [
           if (b.behind > 0) count(Icons.arrow_downward, b.behind),
           if (b.ahead > 0) count(Icons.arrow_upward, b.ahead),
-          if (sum.changes > 0) const Icon(Icons.circle, size: 8, color: Gh.link),
+          if (sum.changes > 0) Icon(Icons.circle, size: 8, color: Gh.link),
         ],
       ),
     );
@@ -1456,7 +1523,7 @@ class _ShellState extends State<Shell> {
       padding: const EdgeInsets.fromLTRB(Gh.sp, Gh.sp, Gh.sp, 0),
       child: Row(
         children: [
-          const Icon(Icons.person_outline, size: 14, color: Gh.textSecondary),
+          Icon(Icons.person_outline, size: 14, color: Gh.textSecondary),
           const SizedBox(width: 6),
           for (final a in s.accounts) chip(a.id, a.label),
           chip('', 'Todos'),
@@ -1589,7 +1656,7 @@ class ToolbarButton extends StatelessWidget {
                         Text(
                           title,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
+                          style: TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
                         ),
                       Text(
                         label,
@@ -1772,7 +1839,7 @@ class _FilterListState extends State<_FilterList> {
             child: shown.isEmpty
                 ? Padding(
                     padding: const EdgeInsets.all(Gh.sp),
-                    child: Text(widget.emptyText, style: const TextStyle(color: Gh.textSecondary)),
+                    child: Text(widget.emptyText, style: TextStyle(color: Gh.textSecondary)),
                   )
                 : ListView.builder(
                     itemCount: rows.length,
@@ -1806,7 +1873,7 @@ class _FilterListState extends State<_FilterList> {
                                 if (foldable && !open)
                                   Text(
                                     '  $count',
-                                    style: const TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
+                                    style: TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
                                   ),
                               ],
                             ),

@@ -364,7 +364,7 @@ class _SummariesPaneState extends State<SummariesPane> {
                   ],
                 ),
         ),
-        const Divider(height: 1, color: Gh.border),
+        Divider(height: 1, color: Gh.border),
         Expanded(child: list),
       ],
     );
@@ -374,7 +374,7 @@ class _SummariesPaneState extends State<SummariesPane> {
     final main = rep != null
         ? _reportView(rep, small)
         : r == null
-        ? emptyState('Resúmenes con IA', 'Elige un resumen de la lista.')
+        ? emptyState('Resúmenes con IA', 'Elige un resumen de la lista.', const [], true)
         : ListView(
             padding: const EdgeInsets.all(Gh.sp * 2),
             children: [
@@ -519,7 +519,7 @@ class _ReportDialogState extends State<_ReportDialog> {
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label, style: const TextStyle(color: Gh.textSecondary)),
+        Text(label, style: TextStyle(color: Gh.textSecondary)),
         const SizedBox(height: 4),
         SegmentedButton<T>(
           showSelectedIcon: false,
@@ -555,7 +555,7 @@ class _ReportDialogState extends State<_ReportDialog> {
               padding: const EdgeInsets.only(bottom: Gh.sp * 1.5),
               child: Row(
                 children: [
-                  const Text('Respecto de', style: TextStyle(color: Gh.textSecondary)),
+                  Text('Respecto de', style: TextStyle(color: Gh.textSecondary)),
                   const SizedBox(width: Gh.sp),
                   DropdownButton<String>(
                     value: _base,
@@ -573,7 +573,7 @@ class _ReportDialogState extends State<_ReportDialog> {
           Text(
             'Usa los resúmenes por commit (los que falten se hacen ahora, una sola vez) y no cuenta los merges. '
             '${_branch ? 'Solo los commits de la rama que la base todavía no tiene: lo que entró al ponerla al día no cuenta.' : 'Tus commits salen de todas las ramas, también de desarrollo.'}',
-            style: const TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
+            style: TextStyle(fontSize: Gh.fontSizeSm, color: Gh.textSecondary),
           ),
         ],
       ),
@@ -632,7 +632,7 @@ class _HintDialogState extends State<_HintDialog> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Text(
+          Text(
             'Lee solo los cambios marcados. Si quieres, cuenta en pocas palabras qué hiciste y lo usa como guía.',
             style: TextStyle(color: Gh.textSecondary),
           ),

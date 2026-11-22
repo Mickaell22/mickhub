@@ -134,7 +134,7 @@ class _DiffViewState extends State<DiffView> {
             const SizedBox(height: Gh.sp),
             Text(
               'Pesa ${(widget.diff.length / 1024 / 1024).toStringAsFixed(1)} MB; mostrarlo puede ir lento.',
-              style: const TextStyle(color: Gh.textSecondary),
+              style: TextStyle(color: Gh.textSecondary),
             ),
             const SizedBox(height: Gh.sp),
             OutlinedButton(
@@ -222,6 +222,6 @@ class _Centered extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Center(
-    child: Text(text, style: const TextStyle(color: Gh.textSecondary)),
+    child: Text(text, style: TextStyle(color: Gh.textSecondary)),
   );
 }

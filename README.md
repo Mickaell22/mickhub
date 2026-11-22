@@ -18,7 +18,11 @@ Necesita `git` instalado; en Windows, con el Git Credential Manager (viene con G
 
 ## Atajos
 
-`Ctrl+T` repositorio · `Ctrl+B` rama · `Ctrl+Shift+N` nueva rama · `Ctrl+1`/`Ctrl+2`/`Ctrl+3` Cambios/Historial/Resúmenes · `Ctrl+Shift+P` fetch/pull/push · `Ctrl+Enter` commit · `Ctrl+Shift+F` abrir carpeta · `Ctrl+Shift+A` abrir en el editor (con el archivo seleccionado) · `Ctrl+`` ` abrir en la terminal · `F5` refrescar · `Ctrl+/` todos los atajos.
+`Ctrl+T` repositorio · `Ctrl+B` rama · `Ctrl+Shift+N` nueva rama · `Ctrl+1`/`Ctrl+2`/`Ctrl+3` Cambios/Historial/Resúmenes · `Ctrl+Shift+P` fetch/pull/push · `Ctrl+Enter` commit · `Ctrl+Shift+F` abrir carpeta · `Ctrl+Shift+A` abrir en el editor (con el archivo seleccionado) · `Ctrl+`` ` abrir en la terminal · `F5` refrescar · `Ctrl+,` personalización · `Ctrl+/` todos los atajos.
+
+## Personalización
+
+Ícono de paleta en la barra (o `Ctrl+,`): 24 paletas (la de GitHub Desktop de fábrica, clásicas, temáticas como Retro, Arcade, Aventura de 16 bits y Espacio, y de temporada), que pueden cambiar solas cada día o al abrir. Las fechas especiales (Halloween, Día de Muertos, Navidad, Año Nuevo, San Valentín, Carnaval, Inti Raymi, tu cumpleaños...) llegan solas. Cada paleta trae una escena dibujada para las pantallas vacías y el hueco de la barra, y una mascota en pixel art (gato, perro, pato, slime, robot o dragón) camina por la barra, duerme de noche, festeja cuando commiteas y se pone gorro en las fiestas. Todo original, dibujado por la app, y quieto si el sistema pide menos animaciones.
 
 ## Resúmenes con IA (opcional)
 
