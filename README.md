@@ -191,7 +191,7 @@ Para activarlo:
 
 ## Claude Code por MickHub
 
-Opcional. El comando `mickhub` (en `cli/`) le da a cada sesión de Claude Code su propio grupo de cambios: lo que edita cae solo en su grupo, aunque haya varias sesiones en el mismo repo o incluso en el mismo archivo, y `mickhub commit` commitea solo ese grupo con la cuenta del repo. La app muestra los grupos en vivo y abre la sesión de Claude de cada grupo con un clic derecho.
+Opcional. El comando `mickhub` (en `cli/`) le da a cada sesión de Claude Code su propio grupo de cambios: lo que edita cae solo en su grupo, aunque haya varias sesiones en el mismo repo o incluso en el mismo archivo, y `mickhub commit` commitea solo ese grupo con la cuenta del repo. Cada grupo lleva una descripción de qué se está haciendo: arranca con lo que le pediste a esa sesión y Claude la completa con `mickhub descripcion`. La app muestra los grupos en vivo y abre la sesión de Claude de cada grupo con un clic derecho.
 
 ```sh
 cd cli && dart pub get && dart compile exe bin/mickhub.dart -o ~/.local/bin/mickhub
@@ -209,6 +209,7 @@ Luego, en `~/.claude/settings.json`, un hook `PreToolUse` y otro `PostToolUse` c
 | `Ctrl+1` `Ctrl+2` `Ctrl+3` | Cambios / Historial / Resúmenes | `Ctrl+Shift+A` | abrir en el editor, en el archivo elegido |
 | `Ctrl+,` | personalización | `` Ctrl+` `` | abrir en la terminal |
 | `F5` | refrescar | `Ctrl+/` | todos los atajos |
+| `Esc` | volver a la vista vacía (soltar el archivo o commit abierto) | | |
 
 ---
 

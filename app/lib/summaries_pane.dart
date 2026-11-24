@@ -148,7 +148,17 @@ class _SummariesPaneState extends State<SummariesPane> {
   @override
   void initState() {
     super.initState();
+    escapeTick.addListener(_deselect);
     _load();
+  }
+
+  void _deselect() {
+    if (_selected != null || _report != null) {
+      setState(() {
+        _selected = null;
+        _report = null;
+      });
+    }
   }
 
   /// Resume los últimos [_batchSize] commits de la rama. Los ya resumidos
@@ -188,6 +198,7 @@ class _SummariesPaneState extends State<SummariesPane> {
 
   @override
   void dispose() {
+    escapeTick.removeListener(_deselect);
     _cancel = true;
     _debounce?.cancel();
     _query.dispose();
@@ -212,7 +223,7 @@ class _SummariesPaneState extends State<SummariesPane> {
         _rows = more ? [..._rows, ...rows] : rows;
         _hasMore = rows.length == _page;
         _loading = false;
-        if (!more) _selected = _rows.firstOrNull;
+        if (!more && !_rows.any((r) => r.hash == _selected?.hash)) _selected = null; // sin abrir el primero solo
       });
     } catch (e) {
       if (mounted && id == _request) {

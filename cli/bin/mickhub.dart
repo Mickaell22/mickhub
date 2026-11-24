@@ -14,12 +14,14 @@ import 'dart:io';
 import '../../app/lib/accounts.dart';
 import '../../app/lib/change_groups.dart';
 import '../../app/lib/git.dart';
+import '../../app/lib/hook_rules.dart';
 
 const _help = '''
 mickhub: MickHub desde la terminal (para Claude Code).
 
   mickhub estado                      grupos de cambios del repo y cuál es el tuyo
   mickhub grupo <nombre>              nombra el grupo de tu sesión (si ya existe, te unes)
+  mickhub descripcion <texto>         de qué se trata tu grupo (se ve en la app y en `estado`)
   mickhub mover <ruta>... [--grupo G] mueve archivos enteros a tu grupo (o a G)
   mickhub commit -m <título> [-m <descripción>] [--grupo G]
                                       commitea solo tu grupo, con la cuenta del repo
@@ -65,6 +67,8 @@ Future<void> main(List<String> argv) async {
         await _status(repo);
       case 'grupo':
         await _name(repo, rest.join(' ').trim());
+      case 'descripcion' || 'descripción':
+        await _describe(repo, rest.join(' ').trim());
       case 'mover':
         await _move(repo, rest);
       case 'commit':
@@ -235,7 +239,8 @@ Future<void> _status(String repo) async {
     ];
     stdout.writeln(
       '\n${name.isEmpty ? 'Sin grupo' : name}${name == mine ? '  <- tu grupo' : ''}'
-      '${owners.isNotEmpty ? '  [sesión ${owners.join(', ')}]' : ''}',
+      '${owners.isNotEmpty ? '  [sesión ${owners.join(', ')}]' : ''}'
+      '${(g.descriptions[name] ?? '').isEmpty ? '' : '\n  · ${g.descriptions[name]}'}',
     );
     for (final p in list ?? const <String>[]) {
       stdout.writeln('  $p');
@@ -256,6 +261,17 @@ Future<void> _name(String repo, String name) async {
     g.sessions[_session] = name;
   });
   stdout.writeln('Tu grupo es "$name".');
+}
+
+Future<void> _describe(String repo, String text) async {
+  if (text.isEmpty) _fail('Uso: mickhub descripcion "<de qué se trata el grupo>"');
+  if (_session.isEmpty) _fail('Falta CLAUDE_CODE_SESSION_ID: el grupo es de una sesión de Claude Code.');
+  final group = await _locked(repo, (g, _) async {
+    final group = g.sessionGroup(_session);
+    g.descriptions[group] = text;
+    return group;
+  });
+  stdout.writeln('Descripción de "$group" guardada.');
 }
 
 Future<void> _move(String repo, List<String> rest) async {
@@ -556,18 +572,6 @@ Future<void> _pull(String repo) async {
 // --- Hooks de Claude Code -----------------------------------------------------------------
 
 /// `git commit` o `git push` (con o sin opciones antes del subcomando).
-/// Órdenes de subir: "haz push", "dale push", "commit y push", "pushea", "súbelo",
-/// "sube lo de lucky", "sube los cambios", "en el repo de github", "a github".
-/// Una palabra suelta no basta: "solo commit y no push" no debe dar permiso.
-final _pushOrder = RegExp(
-  r'\b(haz|hazle|has|dale|hacer|y)\s+(el\s+|un\s+)?push\b|\bpushea\w*|\bs[uú]bel[oa]s?\b|\bs[uú]be\s+(lo|los|todo|eso|esto)\b|\b(a|al|en\s+el)\s+(repo\s+(de\s+)?)?github\b',
-  caseSensitive: false,
-);
-
-/// El mensaje pide subir y esa orden no está negada ("no hagas push", "y no push").
-bool _asksPush(String prompt) => _pushOrder
-    .allMatches(prompt)
-    .any((m) => !RegExp(r'\bno\b[^.,;!?]{0,12}$', caseSensitive: false).hasMatch(prompt.substring(0, m.start)));
 final _gitPush = RegExp(r'''(^|[;&|(\s])git\s+(?:(?:-[cC]|--git-dir|--work-tree)\s+(?:"[^"]*"|'[^']*'|\S+)\s+|--?\S+\s+)*push\b''');
 final _mickhubPush = RegExp(r'''(^|[;&|(\s])mickhub(\.exe)?\s+(?:-C\s+(?:"[^"]*"|'[^']*'|\S+)\s+)?push\b''');
 
@@ -582,13 +586,6 @@ final _gitWrite = RegExp(
 final _dirArg = RegExp(r'''(?:\bcd|\s-C)\s+("[^"]*"|'[^']*'|[^\s;&|)]+)''');
 
 final _quoted = RegExp('"(?:[^"\\\\]|\\\\.)*"|\'[^\']*\'');
-
-// ponytail: mira el comando entero; `git stash pop && sed -i ...` tampoco
-// reparte lo del sed. Upgrade: foto antes y después de cada parte del comando.
-final _movesChanges = RegExp(
-  r'''(^|[;&|(\s])(git\s+(?:(?:-[cC]|--git-dir|--work-tree)\s+(?:"[^"]*"|'[^']*'|\S+)\s+|--?\S+\s+)*'''
-  r'''(stash|checkout|switch|restore|reset|pull|merge|rebase|cherry-pick|revert|am)\b|mickhub(\.exe)?\s)''',
-);
 
 const _editTools = {'Edit', 'Write', 'MultiEdit', 'NotebookEdit'};
 
@@ -613,7 +610,14 @@ Future<void> _hook() async {
   // permiso para ese turno.
   final pushFlag = File('${_cacheDir()}/push/${session.isEmpty ? 'sin-sesion' : session}');
   if (event == 'UserPromptSubmit') {
-    if (_asksPush(input['prompt'] as String? ?? '')) {
+    // Su último pedido: si la sesión crea un grupo, empieza con eso de descripción.
+    final prompt = (input['prompt'] as String? ?? '').replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (prompt.isNotEmpty && session.isNotEmpty) {
+      final f = File('${_cacheDir()}/prompt/$session');
+      f.parent.createSync(recursive: true);
+      f.writeAsStringSync(prompt.length > 240 ? '${prompt.substring(0, 237)}...' : prompt);
+    }
+    if (asksPush(input['prompt'] as String? ?? '')) {
       pushFlag.parent.createSync(recursive: true);
       pushFlag.writeAsStringSync('ok');
     } else if (pushFlag.existsSync()) {
@@ -661,14 +665,17 @@ Future<void> _hook() async {
     // Un comando que solo mueve cambios que ya existían (recuperar un apartado,
     // cambiar de rama, traer) no es trabajo de esta sesión: antes se los
     // quedaba y lo recuperado caía en "Sesión xxxx" en vez de en su grupo.
-    if (path == null && _movesChanges.hasMatch(command.replaceAll(_quoted, 'Q'))) return;
+    if (path == null && onlyMovesChanges(command)) return;
+    // Si además mueve cambios (`... && git stash pop`), lo que vuelve de un
+    // apartado con su grupo recordado no es de esta sesión.
+    final mixed = path == null && mixesMoves(command);
     final dirs = path != null ? [File(path).parent.path] : _dirs(cwd, command);
     final seen = <String>{};
     final created = <String>[];
     for (final d in dirs) {
       final repo = await _toplevel(d);
       if (repo == null || !repos.contains(_norm(repo)) || !seen.add(_norm(repo))) continue;
-      final g = await _track(repo, path == null ? null : _relative(repo, path), event as String?, session);
+      final g = await _track(repo, path == null ? null : _relative(repo, path), event as String?, session, mixed: mixed);
       if (g != null) created.add('"$g" (en ${repo.split(RegExp(r'[\\/]')).last})');
     }
     if (created.isNotEmpty) {
@@ -679,7 +686,9 @@ Future<void> _hook() async {
             'hookEventName': 'PostToolUse',
             'additionalContext':
                 'MickHub: lo que editas cae en tu grupo ${created.join(', ')}. Ponle nombre según la tarea '
-                'con `mickhub grupo "<tarea>"` desde esa carpeta (si ya existe un grupo con ese nombre, te unes a él).',
+                'con `mickhub grupo "<tarea>"` desde esa carpeta (si ya existe un grupo con ese nombre, te unes a él), '
+                'y una descripción corta de lo que estás haciendo con `mickhub descripcion "<qué y por qué>"`; '
+                'actualízala si la tarea cambia o al terminar.',
           },
         }),
       );
@@ -695,7 +704,7 @@ final _autoName = RegExp(r'^Sesión [0-9a-zA-Z-]{1,4}( \(\d+\))?$');
 /// Foto antes de la herramienta y reparto después (ver [_hook]). [rel] es el
 /// archivo que edita (null = un Bash: todo el repo). Devuelve el grupo si lo
 /// acaba de crear (para pedirle a Claude que lo nombre).
-Future<String?> _track(String repo, String? rel, String? event, String session) async {
+Future<String?> _track(String repo, String? rel, String? event, String session, {bool mixed = false}) async {
   final snapFile = File('${(await ChangeGroups.dir(repo)).path}/sesiones/$session.json');
   String? created;
 
@@ -731,11 +740,18 @@ Future<String?> _track(String repo, String? rel, String? event, String session) 
       for (final f in files) {
         final known = paths[f.path] as List?;
         if (known == null && snap['all'] != true) continue; // sin foto de antes: no se adivina
+        // Volvió con el comando (apartado, cambio de rama) y ya tenía grupo: es suyo.
+        if (mixed && known == null && (g.files[f.path] ?? '').isNotEmpty) continue;
         final before = {...?known?.cast<String>()};
         if (hunkKeys(diffs[f.path] ?? '').every(before.contains)) continue;
         final isNew = !g.sessions.containsKey(session);
-        g.claim(f.path, diffs[f.path] ?? '', before, g.sessionGroup(session));
-        if (isNew) created = g.sessions[session];
+        final group = g.sessionGroup(session);
+        g.claim(f.path, diffs[f.path] ?? '', before, group);
+        if (isNew) {
+          created = group;
+          final asked = File('${_cacheDir()}/prompt/$session');
+          if (!g.descriptions.containsKey(group) && asked.existsSync()) g.descriptions[group] = 'Pedido: ${asked.readAsStringSync()}';
+        }
       }
       if (rel == null) {
         snapFile.deleteSync();

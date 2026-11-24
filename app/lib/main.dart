@@ -561,7 +561,7 @@ class _ShellState extends State<Shell> {
     ('Ctrl+`', 'Abrir el repo en la terminal'),
     ('Ctrl+Enter', 'Hacer commit'),
     ('F5', 'Refrescar'),
-    ('Esc', 'Cerrar el desplegable'),
+    ('Esc', 'Cerrar el desplegable, o volver a la vista vacía (soltar el archivo o commit abierto)'),
     ('Ctrl+/', 'Ver estos atajos'),
   ];
 
@@ -583,7 +583,8 @@ class _ShellState extends State<Shell> {
         const SingleActivator(LogicalKeyboardKey.backquote, control: true): () => _openTerminal(repo),
         const SingleActivator(LogicalKeyboardKey.f5): _refresh,
       },
-      const SingleActivator(LogicalKeyboardKey.escape): () => setState(() => _foldout = Foldout.none),
+      // Esc: cierra el desplegable; sin desplegable, el panel suelta lo elegido.
+      const SingleActivator(LogicalKeyboardKey.escape): () => _foldout == Foldout.none ? escapeTick.value++ : setState(() => _foldout = Foldout.none),
       const SingleActivator(LogicalKeyboardKey.slash, control: true): _showShortcuts,
     };
   }

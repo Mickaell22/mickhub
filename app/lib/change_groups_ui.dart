@@ -9,12 +9,19 @@ Future<String?> askGroupName(BuildContext context, {required String title, Strin
       builder: (_) => _NameDialog(title: title, initial: initial, taken: taken),
     );
 
+/// Descripción de un grupo: de qué se trata. '' la borra; null = cancelado.
+Future<String?> askGroupDescription(BuildContext context, {required String group, String? initial}) => showDialog<String>(
+  context: context,
+  builder: (_) => _NameDialog(title: 'Descripción de "$group"', initial: initial, taken: const {}, description: true),
+);
+
 /// El diálogo es dueño de su controlador y lo libera en su propio dispose: si
 /// lo liberara quien lo abre, el campo todavía lo usa durante la animación de
 /// cierre y Flutter falla (pantalla roja).
 class _NameDialog extends StatefulWidget {
-  const _NameDialog({required this.title, this.initial, required this.taken});
+  const _NameDialog({required this.title, this.initial, required this.taken, this.description = false});
   final String title;
+  final bool description;
   final String? initial;
   final Set<String> taken;
 
@@ -34,7 +41,7 @@ class _NameDialogState extends State<_NameDialog> {
 
   void _submit() {
     final v = _ctrl.text.trim();
-    if (v.isEmpty) return;
+    if (v.isEmpty && !widget.description) return;
     if (v != widget.initial && widget.taken.contains(v)) return setState(() => _error = 'Ya hay un grupo con ese nombre');
     Navigator.pop(context, v);
   }
@@ -53,8 +60,13 @@ class _NameDialogState extends State<_NameDialog> {
       child: TextField(
         controller: _ctrl,
         autofocus: true,
-        decoration: InputDecoration(hintText: 'Qué estás implementando (p. ej. Buscador)', errorText: _error),
-        onSubmitted: (_) => _submit(),
+        minLines: widget.description ? 3 : 1,
+        maxLines: widget.description ? 6 : 1,
+        decoration: InputDecoration(
+          hintText: widget.description ? 'De qué se trata, qué falta… (vacío = sin descripción)' : 'Qué estás implementando (p. ej. Buscador)',
+          errorText: _error,
+        ),
+        onSubmitted: widget.description ? null : (_) => _submit(),
       ),
     ),
     actions: [

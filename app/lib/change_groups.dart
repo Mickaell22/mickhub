@@ -28,6 +28,7 @@ class ChangeGroups {
     Map<String, Map<String, List<String>>>? commits,
     Map<String, Map<String, String>>? shelved,
     Set<String>? protectedGroups,
+    Map<String, String>? descriptions,
   }) : names = names ?? [],
        files = files ?? {},
        hunks = hunks ?? {},
@@ -35,7 +36,8 @@ class ChangeGroups {
        sessions = sessions ?? {},
        commits = commits ?? {},
        shelved = shelved ?? {},
-       protectedGroups = protectedGroups ?? {};
+       protectedGroups = protectedGroups ?? {},
+       descriptions = descriptions ?? {};
 
   /// Grupos en el orden en que se muestran.
   List<String> names;
@@ -72,6 +74,12 @@ class ChangeGroups {
   /// Grupos protegidos enteros: lo que entre después (grupo activo, `mover`,
   /// lo que edita una sesión) se protege solo ([protectJoined]).
   Set<String> protectedGroups;
+
+  /// Grupo -> de qué se trata. La pone sola la sesión de Claude que lo crea (su
+  /// último pedido, después lo que ella misma escribe con `mickhub descripcion`)
+  /// o el dueño desde la app. Se conserva aunque el grupo se vacíe, como
+  /// [sessions], para que vuelva con el mismo nombre.
+  Map<String, String> descriptions;
 
   /// Anota qué archivos de cada grupo entraron en [hash] ("Sin grupo" no se anota).
   // ponytail: solo los últimos 5000 commits; los más viejos pierden la etiqueta.
@@ -111,6 +119,7 @@ class ChangeGroups {
       for (final e in ((j['shelved'] ?? const {}) as Map).entries) e.key as String: Map<String, String>.from(e.value as Map),
     },
     protectedGroups: Set<String>.from(j['protectedGroups'] ?? const []),
+    descriptions: Map<String, String>.from(j['descriptions'] ?? const {}),
   ).._extra = Map.of(j);
 
   /// Todo lo leído del JSON, también claves que esta versión no conoce: se
@@ -129,6 +138,7 @@ class ChangeGroups {
     'commits': commits,
     'shelved': shelved,
     'protectedGroups': protectedGroups.toList(),
+    'descriptions': descriptions,
   };
 
   /// Carpeta `<.git>/mickhub` del repo (grupos, candado y fotos de sesiones).
@@ -357,6 +367,7 @@ class ChangeGroups {
     }
     if (collapsed.remove(from)) collapsed.add(to);
     if (protectedGroups.remove(from)) protectedGroups.add(to);
+    if (descriptions.remove(from) case final d?) descriptions[to] = d;
   }
 
   /// Borra el grupo; sus cambios pasan a "Sin grupo" (no se toca ningún archivo).
@@ -371,6 +382,7 @@ class ChangeGroups {
     collapsed.remove(group);
     protectedGroups.remove(group);
     sessions.removeWhere((_, g) => g == group);
+    descriptions.remove(group);
   }
 
   /// Pasa todo lo de [from] a [to] (que ya existe) y borra [from].
@@ -385,6 +397,7 @@ class ChangeGroups {
     if (active == from) active = to;
     collapsed.remove(from);
     if (protectedGroups.remove(from)) protectedGroups.add(to);
+    if (descriptions.remove(from) case final d? when !descriptions.containsKey(to)) descriptions[to] = d;
   }
 
   /// Grupo de la sesión [id] de Claude Code; si no tiene, crea "Sesión xxxx".

@@ -91,6 +91,10 @@ class _GhRowState extends State<GhRow> {
 
 /// Pantalla vacía. [scene]: con el fondo dibujado de la paleta (solo en los
 /// paneles grandes; en una columna angosta estorba).
+/// Esc en la ventana (sin desplegable abierto): el panel abierto suelta lo
+/// elegido y vuelve a la vista vacía, como salir de un chat a la lista.
+final escapeTick = ValueNotifier(0);
+
 Widget emptyState(String title, [String? detail, List<Widget> actions = const [], bool scene = false]) => scene
     ? Stack(
         children: [
@@ -218,6 +222,7 @@ class _ChangesPaneState extends State<ChangesPane> {
   @override
   void initState() {
     super.initState();
+    escapeTick.addListener(_deselect);
     final draft = _drafts[widget.repo];
     if (draft != null) {
       _summary.text = draft.$1;
@@ -273,6 +278,7 @@ class _ChangesPaneState extends State<ChangesPane> {
 
   @override
   void dispose() {
+    escapeTick.removeListener(_deselect);
     _groupsWatch?.cancel();
     _groupsDebounce?.cancel();
     _summary.dispose();
@@ -354,6 +360,15 @@ class _ChangesPaneState extends State<ChangesPane> {
     _loadDiff();
   }
 
+  void _deselect() {
+    if (_selected == null && _picked.isEmpty) return;
+    setState(() {
+      _selected = null;
+      _selGroup = '';
+      _picked.clear();
+    });
+  }
+
   void _apply(_Snapshot r) {
     final (files, locked, shelved, identity, merge, groups, splitDiffs) = r;
     _groups = groups;
@@ -366,10 +381,12 @@ class _ChangesPaneState extends State<ChangesPane> {
     final rows = _rows;
     _excluded.retainAll(rows.map((r) => _key(r.$1, r.$2.path)));
     _picked.retainAll(rows.map((r) => _key(r.$1, r.$2.path)));
+    // No se abre ningún archivo solo (pedido del dueño: entrar a la vista vacía,
+    // como la lista de chats); si el abierto se fue (commit, descarte), se vuelve a ella.
     if (!rows.any((r) => r.$2.path == _selected && r.$1 == _selGroup)) {
-      final first = rows.where((r) => r.$2.path == _selected).firstOrNull ?? rows.firstOrNull;
-      _selected = first?.$2.path;
-      _selGroup = first?.$1 ?? '';
+      final same = rows.where((r) => r.$2.path == _selected).firstOrNull;
+      _selected = same?.$2.path;
+      _selGroup = same?.$1 ?? '';
     }
   }
 
@@ -646,6 +663,7 @@ class _ChangesPaneState extends State<ChangesPane> {
         if (named) ...[
           const PopupMenuDivider(),
           menuItem('rename', Icons.edit_outlined, 'Renombrar…'),
+          menuItem('describe', Icons.notes, _groups.descriptions[group] == null ? 'Agregar descripción…' : 'Editar descripción…'),
           menuItem('delete', Icons.delete_outline, 'Eliminar grupo (los cambios quedan)', danger: true),
         ],
       ],
@@ -683,6 +701,10 @@ class _ChangesPaneState extends State<ChangesPane> {
         if (!mounted) return;
         final to = await askGroupName(context, title: 'Renombrar grupo', initial: group, taken: _groups.names.toSet());
         if (to != null && to != group) await _saveGroups((g) => g.rename(group, to));
+      case 'describe':
+        if (!mounted) return;
+        final d = await askGroupDescription(context, group: group, initial: _groups.descriptions[group]);
+        if (d != null) await _saveGroups((g) => d.isEmpty ? g.descriptions.remove(group) : g.descriptions[group] = d);
       case 'delete':
         await _saveGroups((g) => g.remove(group));
     }
@@ -1502,12 +1524,24 @@ class _ChangesPaneState extends State<ChangesPane> {
               Icon(group.isEmpty ? Icons.folder_off_outlined : Icons.folder_special_outlined, size: 14, color: Gh.link),
               const SizedBox(width: 6),
               Expanded(
-                child: Text(
-                  group.isEmpty ? 'Sin grupo' : group,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontWeight: FontWeight.w600),
+                child: Tooltip(
+                  message: _groups.descriptions[group] ?? '',
+                  waitDuration: const Duration(milliseconds: 400),
+                  child: Text(
+                    group.isEmpty ? 'Sin grupo' : group,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontWeight: FontWeight.w600),
+                  ),
                 ),
               ),
+              if (_groups.descriptions[group] case final d? when d.isNotEmpty)
+                Tooltip(
+                  message: d,
+                  child: Padding(
+                    padding: const EdgeInsets.only(right: 4),
+                    child: Icon(Icons.notes, size: 13, color: Gh.textSecondary),
+                  ),
+                ),
               if (active)
                 const Tooltip(
                   message: 'Grupo activo: lo nuevo que toques cae aquí',
@@ -1654,7 +1688,7 @@ class _ChangesPaneState extends State<ChangesPane> {
           label: const Text('Abrir en el editor'),
         ),
       ], true),
-      (_, null, _) => emptyState('Selecciona un archivo', 'Elige un archivo de la lista para ver sus cambios.', const [], true),
+      (_, null, _) => emptyState('Selecciona un archivo', 'Elige un archivo de la lista para ver sus cambios. Esc vuelve aquí.', const [], true),
       (_, final f?, _) when f.status == FileStatus.conflicted => _conflictView(f),
       // Imágenes: antes (último commit) y después (lo que hay en disco).
       (_, final f?, _) when isImagePath(f.path) => Column(
@@ -1865,12 +1899,18 @@ class _HistoryPaneState extends State<HistoryPane> {
   // mantienen al pasar de un commit a otro: si cierras "Config", sigue cerrado.
   final _closedGroups = <String>{};
   Map<String, String> _groupSessions = {}; // sesión de Claude Code -> su grupo
+  Map<String, String> _groupDescriptions = {}; // grupo -> de qué se trata
 
   @override
   void initState() {
     super.initState();
     _fileFilter.addListener(() => setState(() {}));
+    escapeTick.addListener(_deselect);
     _load();
+  }
+
+  void _deselect() {
+    if (_selected != null) setState(() => _selected = null);
   }
 
   @override
@@ -1881,6 +1921,7 @@ class _HistoryPaneState extends State<HistoryPane> {
 
   @override
   void dispose() {
+    escapeTick.removeListener(_deselect);
     _searchDebounce?.cancel();
     _fileFilter.dispose();
     super.dispose();
@@ -1893,6 +1934,7 @@ class _HistoryPaneState extends State<HistoryPane> {
       _commits = commits;
       _commitGroups = groups.commits;
       _groupSessions = groups.sessions;
+      _groupDescriptions = groups.descriptions;
       _hasMore = commits.length == logPage;
     });
     if (_query.trim().isNotEmpty) _search(_query);
@@ -1903,8 +1945,9 @@ class _HistoryPaneState extends State<HistoryPane> {
     if (_selected == null && widget.focusHash != null && focus == null) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Ese commit no está en este repo todavía: trae los cambios (fetch).')));
     }
+    // Como en Cambios: no se abre el primero solo, solo el que ya estaba o el pedido.
     final keep = focus ?? commits.where((c) => c.hash == _selected?.hash).firstOrNull;
-    if (commits.isNotEmpty || keep != null) _select(keep ?? commits.first);
+    if (keep != null) _select(keep);
   }
 
   /// Siguiente página, al llegar al final de la lista.
@@ -2258,7 +2301,7 @@ class _HistoryPaneState extends State<HistoryPane> {
                     for (final g in _commitGroups[c.hash]?.keys ?? const <String>[])
                       Padding(
                         padding: const EdgeInsets.only(left: 4),
-                        child: Tooltip(message: 'Grupo de cambios', child: groupChip(g)),
+                        child: Tooltip(message: _groupDescriptions[g] == null ? 'Grupo de cambios' : 'Grupo de cambios: ${_groupDescriptions[g]}', child: groupChip(g)),
                       ),
                     if (unpushed.contains(c.hash))
                       Tooltip(
@@ -2289,7 +2332,7 @@ class _HistoryPaneState extends State<HistoryPane> {
 
     final c = _selected;
     final main = c == null
-        ? emptyState('Sin commits', null, const [], true)
+        ? emptyState(_commits.isEmpty ? 'Sin commits' : 'Elige un commit', _commits.isEmpty ? null : 'Mira qué cambió y su resumen. Esc vuelve aquí.', const [], true)
         : Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [

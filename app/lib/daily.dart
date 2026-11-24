@@ -22,7 +22,8 @@ const _landmarksFor = {
   Terrain.lago: [Landmark.cabana, Landmark.velero, Landmark.puente, Landmark.carpa],
   Terrain.ciudad: [Landmark.noria, Landmark.antena, Landmark.tren, Landmark.globos],
   Terrain.bosque: [Landmark.carpa, Landmark.cabana, Landmark.tren, Landmark.observatorio],
-  Terrain.islas: [Landmark.faro, Landmark.velero, Landmark.oasis, Landmark.ballena],
+  // Sin oasis: sus palmeras salían del agua, no de una isla.
+  Terrain.islas: [Landmark.faro, Landmark.velero, Landmark.puente, Landmark.ballena],
   Terrain.canon: [Landmark.tren, Landmark.puente, Landmark.globos, Landmark.caravana],
   Terrain.nevado: [Landmark.cabana, Landmark.observatorio, Landmark.tren, Landmark.carpa],
   Terrain.volcan: [Landmark.globos, Landmark.observatorio, Landmark.carpa, Landmark.antena],
@@ -97,7 +98,18 @@ class DailyScene {
   bool get dark => time == DayTime.noche || time == DayTime.luna || time == DayTime.crepusculo;
 }
 
-bool _fits(Terrain t, DayTime time, Weather w) => switch (w) {
+/// Terrenos con suelo firme a la izquierda (donde puede ir un árbol).
+const _land = {Terrain.montanas, Terrain.colinas, Terrain.dunas, Terrain.bosque, Terrain.canon, Terrain.nevado, Terrain.volcan, Terrain.pradera};
+
+bool _fits(Terrain t, Landmark l, DayTime time, Weather w) {
+  final night = time == DayTime.noche || time == DayTime.luna;
+  // Cometas de noche, o cometas y globos bajo lluvia o nieve, no tienen sentido.
+  if (l == Landmark.cometas && night) return false;
+  if ((l == Landmark.cometas || l == Landmark.globos) && (w == Weather.lluvia || w == Weather.nieve)) return false;
+  return _weatherFits(t, time, w);
+}
+
+bool _weatherFits(Terrain t, DayTime time, Weather w) => switch (w) {
   Weather.nieve => t != Terrain.dunas && t != Terrain.islas && t != Terrain.volcan && t != Terrain.canon,
   Weather.luciernagas => time != DayTime.amanecer && (t == Terrain.bosque || t == Terrain.lago || t == Terrain.pradera || t == Terrain.colinas),
   Weather.fugaces => time != DayTime.amanecer && time != DayTime.atardecer,
@@ -112,7 +124,7 @@ final List<DailyScene> _allDays = () {
     for (final l in _landmarksFor[t]!) {
       for (final time in DayTime.values) {
         for (final w in Weather.values) {
-          if (_fits(t, time, w)) all.add(DailyScene(0, t, l, time, w));
+          if (_fits(t, l, time, w)) all.add(DailyScene(0, t, l, time, w));
         }
       }
     }
@@ -182,7 +194,7 @@ extension on _P {
     _terrain(d, far: true);
     final lx = w * (.18 + r.nextDouble() * .64);
     _landmark(d, lx);
-    _terrain(d, far: false);
+    _terrain(d, far: false, clear: lx);
     _critters(d, r);
     _weather(d);
   }
@@ -259,7 +271,9 @@ extension on _P {
     return tint(c0, (d.dark ? .32 : .42) + depth * .3);
   }
 
-  void _terrain(DailyScene d, {required bool far}) {
+  /// [clear]: x del lugar emblemático; los pinos de adelante del bosque lo esquivan
+  /// (antes la cabaña o la carpa quedaban tapadas).
+  void _terrain(DailyScene d, {required bool far, double? clear}) {
     final r = rnd(d.day * 31 + (far ? 1 : 2));
     final g = ground;
     final k = strip ? .18 : 1.0;
@@ -312,7 +326,9 @@ extension on _P {
         c.drawPath(wave(g - (far ? 70 : 24) * k - (strip ? 4 : 0), (far ? 22 : 10) * k + 1, far ? .006 : .011, d.day * .7 + (far ? 0 : 2)), fill(col));
         if (d.terrain == Terrain.bosque) {
           for (var x = -10.0; x < w; x += (strip ? 10 : 30) + r.nextDouble() * (strip ? 8 : 26)) {
-            pine(x, g - (far ? 50 : 14) * k, (far ? 70 : 100) * (.6 + r.nextDouble() * .5) * (strip ? .22 : 1), tint(const Color(0xff1f4a2a), far ? .5 : .8));
+            final size = (far ? 70 : 100) * (.6 + r.nextDouble() * .5) * (strip ? .22 : 1);
+            if (!far && clear != null && (x - clear).abs() < (strip ? 22 : 110)) continue;
+            pine(x, g - (far ? 50 : 14) * k, size, tint(const Color(0xff1f4a2a), far ? .5 : .8));
           }
         }
         if (d.terrain == Terrain.pradera && !far && !strip) {
@@ -714,7 +730,8 @@ extension on _P {
       case Landmark.tren:
         final u = 14 * k + (strip ? 2 : 0);
         final y = base - u * 2;
-        final x0 = (t * (strip ? 20 : 40)) % (w + u * 40) - u * 30;
+        // Desfasado para que el cuadro quieto (t = 3) lo muestre entero.
+        final x0 = (t * (strip ? 20 : 40) + w * .45) % (w + u * 40) - u * 30;
         for (var i = 0; i < 5; i++) {
           final cx = x0 + i * u * 4.4;
           c.drawRRect(RRect.fromRectAndRadius(Rect.fromLTWH(cx, y, u * 4, u * 1.8), Radius.circular(u * .3)), fill(ink));
@@ -737,13 +754,39 @@ extension on _P {
           c.drawCircle(at, 6, fill(const Color(0xffd9ff6a).withValues(alpha: a * .12)));
           c.drawCircle(at, 1.6, fill(const Color(0xffeaffa0).withValues(alpha: a * .9)));
         }
-      } else if (r.nextBool() && !strip) {
-        // Búho en una rama (ojos que parpadean).
-        final o = Offset(w * (.05 + r.nextDouble() * .15), ground - 120);
-        c.drawLine(o.translate(-30, 22), o.translate(40, 18), Paint()
-          ..color = tint(Gh.border, 1)
-          ..strokeWidth = 4);
+      } else if (r.nextBool() && !strip && _land.contains(d.terrain)) {
+        // Búho en un árbol seco (antes iba en una rama suelta y flotaba en el aire,
+        // también sobre el mar o entre edificios).
+        final tx = w * (.06 + r.nextDouble() * .14), top = ground - 150;
+        final wood = tint(Gh.border, 1);
+        c.drawPath(
+          Path()
+            ..moveTo(tx - 7, ground + 4)
+            ..quadraticBezierTo(tx - 3, ground - 70, tx - 2, top)
+            ..lineTo(tx + 2, top)
+            ..quadraticBezierTo(tx + 4, ground - 70, tx + 8, ground + 4)
+            ..close(),
+          fill(wood),
+        );
+        final limb = Paint()
+          ..color = wood
+          ..strokeCap = StrokeCap.round;
+        c.drawLine(Offset(tx, top + 22), Offset(tx + 46, top + 12), limb..strokeWidth = 4);
+        c.drawLine(Offset(tx, top + 46), Offset(tx - 30, top + 30), limb..strokeWidth = 3);
+        c.drawLine(Offset(tx - 1, top + 6), Offset(tx - 14, top - 10), limb..strokeWidth = 2.5);
+        final o = Offset(tx + 30, top + 1);
         c.drawOval(Rect.fromCenter(center: o, width: 22, height: 30), fill(tint(const Color(0xff6a5040), .8)));
+        // Orejas.
+        for (final dx in [-7.0, 7.0]) {
+          c.drawPath(
+            Path()
+              ..moveTo(o.dx + dx - 3, o.dy - 12)
+              ..lineTo(o.dx + dx, o.dy - 19)
+              ..lineTo(o.dx + dx + 3, o.dy - 12)
+              ..close(),
+            fill(tint(const Color(0xff6a5040), .8)),
+          );
+        }
         final blink = (t % 5) < .15;
         for (final dx in [-5.0, 5.0]) {
           c.drawCircle(o.translate(dx, -6), 4, fill(tint(const Color(0xffffd35a), .9)));
