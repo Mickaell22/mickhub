@@ -44,6 +44,24 @@ void main() {
     expect(ChangeGroups().sync(['a.dart']), isFalse); // sin grupos no se guarda nada
   });
 
+  test('sync junta claves con otras mayúsculas en la ruta de git (caso real en Windows)', () {
+    // Lo que tenía grupos.json: la clave en minúsculas con el grupo y la de git con "".
+    final g = ChangeGroups(
+      names: ['Jefatura'],
+      files: {'jefaturaap/Vista.ts': 'Jefatura', 'JefaturaAP/Vista.ts': '', 'docs/nuevo.md': 'Jefatura'},
+      hunks: {'jefaturaap/Vista.ts': {'k1': 'Jefatura'}},
+    );
+    expect(g.sync(['JefaturaAP/Vista.ts', 'docs/NUEVO.md']), isTrue);
+    expect(g.groupOf('JefaturaAP/Vista.ts'), 'Jefatura');
+    expect(g.groupOf('docs/NUEVO.md'), 'Jefatura', reason: 'archivo nuevo sin commit con mayúsculas');
+    expect(g.files.keys, isNot(contains('jefaturaap/Vista.ts')));
+    expect(g.hunks.keys, ['JefaturaAP/Vista.ts']);
+    // Dos archivos de verdad distintos solo por mayúsculas (Linux) no se mezclan.
+    final h = ChangeGroups(names: ['A'], files: {'a.txt': 'A'});
+    h.sync(['a.txt', 'A.txt']);
+    expect((h.groupOf('a.txt'), h.groupOf('A.txt')), ('A', ''));
+  });
+
   test('crear un grupo no se lleva lo que ya estaba sin grupo; solo lo nuevo', () {
     final g = ChangeGroups()..add('Buscador', ['ya.dart', 'llevar.dart'], take: ['llevar.dart']);
     g.sync(['ya.dart', 'llevar.dart', 'nuevo.dart']);

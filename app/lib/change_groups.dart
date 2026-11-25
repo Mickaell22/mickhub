@@ -254,6 +254,24 @@ class ChangeGroups {
       if (hunks[p]!.isEmpty) hunks.remove(p);
       if (hunks[p]?.length != before) dirty = true;
     }
+    // Claves con otras mayúsculas que las de git (un `mickhub` viejo en Windows
+    // las guardaba en minúsculas): el archivo salía en "Sin grupo" con su grupo
+    // guardado en otra clave. Se pasan a la ruta de git; gana el grupo real sobre ''.
+    final byLower = {for (final p in now) p.toLowerCase(): p};
+    for (final k in files.keys.toList()) {
+      final real = byLower[k.toLowerCase()];
+      if (real == null || now.contains(k)) continue;
+      final g = files.remove(k)!;
+      if ((files[real] ?? '').isEmpty) files[real] = g;
+      dirty = true;
+    }
+    for (final k in hunks.keys.toList()) {
+      final real = byLower[k.toLowerCase()];
+      if (real == null || now.contains(k)) continue;
+      final m = hunks.remove(k)!;
+      hunks[real] ??= m;
+      dirty = true;
+    }
     for (final p in now) {
       if (!files.containsKey(p)) {
         files[p] = active ?? '';

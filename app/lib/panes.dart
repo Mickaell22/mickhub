@@ -205,7 +205,9 @@ class _ChangesPaneState extends State<ChangesPane> {
   final _hunks = <int>{}; // bloques marcados para apartar en el archivo elegido
   String? _gitIdentity; // la de git (repo o global), si el repo no tiene cuenta
   bool _showShelves = true;
-  bool _showProtected = true;
+  // Cerrada por defecto (pedido del dueño: siempre salía desplegada); si se abre,
+  // queda abierta mientras la app siga abierta, aunque se cambie de pestaña o repo.
+  static bool _showProtected = false;
   final _excluded = <String>{}; // filas (grupo + ruta, ver [_key]) que no entran al commit
   ChangeGroups _groups = ChangeGroups();
   Map<String, String> _splitDiffs = {}; // diff de los archivos repartidos entre grupos

@@ -197,7 +197,7 @@ Opcional. El comando `mickhub` (en `cli/`) le da a cada sesión de Claude Code s
 cd cli && dart pub get && dart compile exe bin/mickhub.dart -o ~/.local/bin/mickhub
 ```
 
-Luego, en `~/.claude/settings.json`, un hook `PreToolUse` y otro `PostToolUse` con `"matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit"` y `"command": "mickhub hook"`. Con eso, en los repos de MickHub, `git commit` y `git push` directos quedan bloqueados y Claude usa `mickhub commit` / `mickhub push`; el push solo pasa en el turno en que se lo pides. `mickhub --help` lista el resto: `estado`, `mover`, `apartados`, `apartar`, `recuperar`, `protegidos`, `proteger` y `desproteger`, para ver y arreglar desde la terminal lo mismo que en la app.
+Luego, en `~/.claude/settings.json`, un hook `PreToolUse` y otro `PostToolUse` con `"matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit"` y `"command": "mickhub hook"`. Con eso, en los repos de MickHub, `git commit` y `git push` directos quedan bloqueados y Claude usa `mickhub commit` / `mickhub push`; el push solo pasa en el turno en que se lo pides. Si un commit se llevaría un archivo solo en parte (sus otros bloques son de otra tarea), `mickhub commit` lo muestra y pide `--parcial`; `mickhub estado --json` da los grupos para scripts. `mickhub --help` lista el resto: `estado`, `mover`, `apartados`, `apartar`, `recuperar`, `protegidos`, `proteger` y `desproteger`, para ver y arreglar desde la terminal lo mismo que en la app.
 
 ## Atajos
 

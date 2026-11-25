@@ -19,12 +19,15 @@ import '../../app/lib/hook_rules.dart';
 const _help = '''
 mickhub: MickHub desde la terminal (para Claude Code).
 
-  mickhub estado                      grupos de cambios del repo y cuál es el tuyo
-  mickhub grupo <nombre>              nombra el grupo de tu sesión (si ya existe, te unes)
+  mickhub estado [--json]             grupos de cambios del repo y cuál es el tuyo; avisa de
+                                      un index.lock viejo y de protegidos con cambios ocultos
+  mickhub grupo <nombre>              nombra el grupo de tu sesión. Si ya tenía nombre, pasa a
+                                      otro grupo (nuevo o existente) y el anterior queda igual
   mickhub descripcion <texto>         de qué se trata tu grupo (se ve en la app y en `estado`)
   mickhub mover <ruta>... [--grupo G] mueve archivos enteros a tu grupo (o a G)
-  mickhub commit -m <título> [-m <descripción>] [--grupo G]
-                                      commitea solo tu grupo, con la cuenta del repo
+  mickhub commit -m <título> [-m <descripción>] [--grupo G] [--parcial]
+                                      commitea solo tu grupo, con la cuenta del repo; si un
+                                      archivo va solo en parte, lo lista y pide --parcial
   mickhub push [args de git push]     sube con la cuenta del repo
   mickhub pull                        trae con la cuenta del repo
 
@@ -36,7 +39,8 @@ mickhub: MickHub desde la terminal (para Claude Code).
   mickhub proteger <ruta>... | --grupo G
   mickhub desproteger <ruta>... | --grupo G
 
-Opción global: -C <carpeta> (por defecto, la actual).
+Opción global: -C <carpeta> (por defecto, la actual). Nombres de grupo con espacios
+o signos, entre comillas: --grupo "Login: arreglo de sesión".
 La sesión sale de CLAUDE_CODE_SESSION_ID.''';
 
 Future<void> main(List<String> argv) async {
@@ -47,7 +51,8 @@ Future<void> main(List<String> argv) async {
     dir = args[c + 1];
     args.removeRange(c, c + 2);
   }
-  if (args.isEmpty || args.first == '-h' || args.first == '--help') {
+  // `--help` en cualquier lugar (antes `mickhub mover --help` lo tomaba como una ruta).
+  if (args.isEmpty || args.contains('-h') || args.contains('--help')) {
     stdout.writeln(_help);
     return;
   }
@@ -64,7 +69,7 @@ Future<void> main(List<String> argv) async {
     final rest = args.sublist(1);
     switch (args.first) {
       case 'estado':
-        await _status(repo);
+        await _status(repo, json: rest.contains('--json'));
       case 'grupo':
         await _name(repo, rest.join(' ').trim());
       case 'descripcion' || 'descripción':
@@ -209,58 +214,135 @@ Future<Map<String, String>> _diffs(String repo, List<FileChange> files) async {
 
 // --- Comandos ---------------------------------------------------------------------------
 
-Future<void> _status(String repo) async {
+Future<void> _status(String repo, {bool json = false}) async {
   final b = await branchState(repo);
   final g = await reconcile(repo); // lo mismo que calcula la app antes de mostrar
   final files = await status(repo);
   final mine = g.sessions[_session];
+  final (locked, shelved, lock) = await (protectedFiles(repo), shelves(repo), _staleLock(repo)).wait;
+  final hidden = await _hiddenChanges(repo, locked);
+  final diffs = await _diffs(repo, files.where((f) => g.hunks.containsKey(f.path)).toList());
+  final byGroup = <String, List<(String, bool)>>{};
+  for (final f in files) {
+    final gs = g.hunks.containsKey(f.path) ? g.hunkGroups(f.path, diffs[f.path] ?? '').toSet() : {g.groupOf(f.path)};
+    for (final x in gs) {
+      byGroup.putIfAbsent(x, () => []).add((f.path, gs.length > 1));
+    }
+  }
+  final shown = [
+    for (final name in [...g.names, ''])
+      if (byGroup.containsKey(name) || name == mine) name,
+  ];
+  List<String> owners(String name) => [
+    for (final e in g.sessions.entries)
+      if (e.value == name) e.key,
+  ];
+  if (json) {
+    stdout.writeln(
+      const JsonEncoder.withIndent('  ').convert({
+        'branch': b.name,
+        'upstream': b.upstream,
+        'ahead': b.ahead,
+        'behind': b.behind,
+        'mine': mine,
+        'groups': [
+          for (final name in shown)
+            {
+              'name': name,
+              'description': g.descriptions[name],
+              'sessions': owners(name),
+              'protected': g.protectedGroups.contains(name),
+              'files': [
+                for (final (p, part) in byGroup[name] ?? const <(String, bool)>[]) {'path': p, 'partial': part},
+              ],
+            },
+        ],
+        'protected': [for (final p in locked) p.path],
+        'hiddenChanges': hidden,
+        'shelves': shelved.length,
+        'staleIndexLock': lock,
+      }),
+    );
+    return;
+  }
   stdout.writeln(
     'Rama ${b.name}${b.upstream == null ? ' (sin publicar)' : ''}${b.ahead > 0 ? ' · ${b.ahead} para subir' : ''}'
     '${b.behind > 0 ? ' · ${b.behind} para traer' : ''}',
   );
-  final (locked, shelved) = await (protectedFiles(repo), shelves(repo)).wait;
+  if (lock != null) stdout.writeln('Aviso: $lock');
   if (locked.isNotEmpty) stdout.writeln('Protegidos: ${locked.length} (`mickhub protegidos`)');
+  if (hidden.isNotEmpty) {
+    stdout.writeln(
+      'Ocultos por skip-worktree con cambios locales (no salen abajo ni se commitean): ${hidden.take(5).join(', ')}'
+      '${hidden.length > 5 ? ' y ${hidden.length - 5} más' : ''}. `mickhub desproteger <ruta>` los vuelve a mostrar.',
+    );
+  }
   if (shelved.isNotEmpty) stdout.writeln('Apartados: ${shelved.length} (`mickhub apartados`)');
   if (files.isEmpty) return stdout.writeln('Sin cambios.');
-  final diffs = await _diffs(repo, files.where((f) => g.hunks.containsKey(f.path)).toList());
-  final byGroup = <String, List<String>>{};
-  for (final f in files) {
-    final gs = g.hunks.containsKey(f.path) ? g.hunkGroups(f.path, diffs[f.path] ?? '').toSet() : {g.groupOf(f.path)};
-    for (final x in gs) {
-      byGroup.putIfAbsent(x, () => []).add('${f.path}${gs.length > 1 ? ' (en parte)' : ''}');
-    }
-  }
-  for (final name in [...g.names, '']) {
-    final list = byGroup[name];
-    if (list == null && name != mine) continue;
-    final owners = [
-      for (final e in g.sessions.entries)
-        if (e.value == name) e.key.substring(0, 4),
-    ];
+  for (final name in shown) {
+    final o = owners(name).map((e) => e.substring(0, 4));
     stdout.writeln(
       '\n${name.isEmpty ? 'Sin grupo' : name}${name == mine ? '  <- tu grupo' : ''}'
-      '${owners.isNotEmpty ? '  [sesión ${owners.join(', ')}]' : ''}'
+      '${o.isNotEmpty ? '  [sesión ${o.join(', ')}]' : ''}'
       '${(g.descriptions[name] ?? '').isEmpty ? '' : '\n  · ${g.descriptions[name]}'}',
     );
-    for (final p in list ?? const <String>[]) {
-      stdout.writeln('  $p');
+    for (final (p, part) in byGroup[name] ?? const <(String, bool)>[]) {
+      stdout.writeln('  $p${part ? ' (en parte)' : ''}');
     }
   }
+}
+
+/// `.git/index.lock` que quedó de un git que se cortó: traba todo git sin dar
+/// pista. null si no hay, o si es reciente (puede ser de un git que corre ahora).
+// ponytail: solo mira la edad (más de 2 min), no los procesos de git: listar
+// procesos es distinto en cada sistema y un git real no tiene el lock tanto rato.
+Future<String?> _staleLock(String repo) async {
+  final rel = (await git(['rev-parse', '--git-path', 'index.lock'], cwd: repo)).trim();
+  final f = File(rel.startsWith('/') || RegExp(r'^[A-Za-z]:').hasMatch(rel) ? rel : '$repo/$rel');
+  if (!f.existsSync()) return null;
+  final age = DateTime.now().difference(f.lastModifiedSync());
+  if (age < const Duration(minutes: 2)) return null;
+  final when = age.inHours > 0 ? '${age.inHours} h' : '${age.inMinutes} min';
+  return 'hay un index.lock de hace $when (${f.path}) que traba git. Si ningún git ni editor está trabajando en este repo, bórralo.';
+}
+
+/// Archivos protegidos con skip-worktree que sí tienen cambios: git los muestra
+/// sin cambios, así que una tarea que los toca no los ve ni los puede commitear.
+Future<List<String>> _hiddenChanges(String repo, List<Protected> locked) async {
+  final tracked = locked.where((p) => p.tracked).map((p) => p.path).toList();
+  if (tracked.isEmpty) return const [];
+  final index = {
+    for (final l in LineSplitter.split(await git(['ls-files', '-s', '--', ...tracked], cwd: repo)))
+      l.split('\t').last: l.split(' ')[1],
+  };
+  final out = <String>[];
+  for (final p in tracked) {
+    if (!File('$repo/$p').existsSync()) continue;
+    final now = (await git(['hash-object', '--path=$p', p], cwd: repo)).trim();
+    if (index[p] != null && index[p] != now) out.add(p);
+  }
+  return out;
 }
 
 Future<void> _name(String repo, String name) async {
   if (name.isEmpty) _fail('Uso: mickhub grupo <nombre>');
   if (_session.isEmpty) _fail('Falta CLAUDE_CODE_SESSION_ID: el grupo es de una sesión de Claude Code.');
-  await _locked(repo, (g, _) async {
+  final kept = await _locked(repo, (g, _) async {
     final old = g.sessions[_session];
-    if (old == null || !g.names.contains(old)) {
-      if (!g.names.contains(name)) g.names = [...g.names, name];
-    } else if (old != name) {
+    String? kept;
+    if (old != null && g.names.contains(old) && old != name && _autoName.hasMatch(old)) {
+      // "Sesión xxxx" todavía sin nombre: se le pone (o se une al que ya existe).
       g.names.contains(name) ? g.merge(old, name) : g.rename(old, name);
+    } else {
+      // Ya tenía nombre: es otra tarea. Antes se renombraba y se llevaba los
+      // archivos del grupo anterior, mezclando dos grupos distintos.
+      if (!g.names.contains(name)) g.names = [...g.names, name];
+      if (old != null && old != name && g.names.contains(old)) kept = old;
     }
     g.sessions[_session] = name;
+    return kept;
   });
-  stdout.writeln('Tu grupo es "$name".');
+  stdout.writeln(kept == null ? 'Tu grupo es "$name".' : 'Tu grupo es "$name". "$kept" queda como estaba, con sus archivos.');
 }
 
 Future<void> _describe(String repo, String text) async {
@@ -334,10 +416,12 @@ Future<void> _commit(String repo, List<String> rest) async {
     messages.add(m!);
   }
   final opt = _option(rest, '--grupo');
-  if (messages.isEmpty || messages.first.trim().isEmpty) _fail('Uso: mickhub commit -m <título> [-m <descripción>] [--grupo G]');
+  final allowPartial = rest.remove('--parcial');
+  if (messages.isEmpty || messages.first.trim().isEmpty) _fail('Uso: mickhub commit -m <título> [-m <descripción>] [--grupo G] [--parcial]');
   final text = messages.join('\n');
   if (_forbidden.hasMatch(text)) _fail('El mensaje trae una firma o trailer de autoría prohibido. Quítalo.');
 
+  if (await _staleLock(repo) case final lock?) _fail('No se puede commitear: $lock');
   final g = await reconcile(repo);
   final group = opt ?? g.sessions[_session];
   if (group == null) _fail('Tu sesión todavía no tiene grupo (no editó nada). Usa --grupo o `mickhub mover`.');
@@ -345,6 +429,23 @@ Future<void> _commit(String repo, List<String> rest) async {
   final (whole, parts) = await _groupParts(repo, g, group);
   final partial = {for (final e in parts.entries) e.key: selectHunks(e.value.$1, e.value.$2)!};
   if (whole.isEmpty && partial.isEmpty) _fail('El grupo "$group" no tiene cambios. `mickhub estado` muestra qué hay.');
+  // Un archivo que va solo en parte (sus otros bloques son de otro grupo) se avisa
+  // antes: pasó que un commit dejó fuera el .html y casi todo el .ts sin decir nada.
+  if (parts.isNotEmpty && !allowPartial) {
+    final lines = <String>[];
+    for (final MapEntry(key: path, value: (diff, mine)) in parts.entries) {
+      final groups = g.hunkGroups(path, diff);
+      final others = {
+        for (var i = 0; i < groups.length; i++)
+          if (!mine.contains(i)) groups[i].isEmpty ? 'Sin grupo' : groups[i],
+      };
+      lines.add('  $path: van ${mine.length} de ${groups.length} bloques; quedan fuera ${groups.length - mine.length} (en ${others.map((o) => '"$o"').join(', ')})');
+    }
+    _fail(
+      'Estos archivos van solo en parte en el commit de "$group":\n${lines.join('\n')}\n'
+      'Si está bien, repite con --parcial. Si el archivo entero es de esta tarea: `mickhub mover <ruta>` y commitea de nuevo.',
+    );
+  }
 
   final origin = await originUrl(repo);
   await commit(
@@ -738,7 +839,9 @@ Future<String?> _track(String repo, String? rel, String? event, String session, 
       final snap = _readSnap(snapFile);
       final paths = snap['paths'] as Map<String, dynamic>;
       for (final f in files) {
-        final known = paths[f.path] as List?;
+        // La foto puede tener la ruta con otras mayúsculas (la que pasó Claude Code
+        // en Windows): se busca como compara el sistema de archivos.
+        final known = (paths[f.path] ?? paths.entries.where((e) => _norm(e.key) == _norm(f.path)).firstOrNull?.value) as List?;
         if (known == null && snap['all'] != true) continue; // sin foto de antes: no se adivina
         // Volvió con el comando (apartado, cambio de rama) y ya tenía grupo: es suyo.
         if (mixed && known == null && (g.files[f.path] ?? '').isNotEmpty) continue;
